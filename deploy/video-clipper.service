@@ -1,0 +1,32 @@
+[Unit]
+Description=Video Clipper API
+After=network.target
+
+[Service]
+Type=simple
+User=videoclip
+Group=videoclip
+WorkingDirectory=/srv/video-clipper/backend
+Environment=VC_DATA_DIR=/srv/video-clipper/data
+Environment=VC_MAX_UPLOAD_BYTES=524288000
+Environment=VC_RETENTION_HOURS=24
+Environment=VC_MIN_FREE_BYTES=1073741824
+ExecStart=/srv/video-clipper/.venv/bin/uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+
+# Resource limits: protect a 1 vCPU / 1 GB box from runaway FFmpeg.
+MemoryMax=700M
+MemoryHigh=600M
+CPUQuota=90%
+Nice=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/video-clipper/data
+
+[Install]
+WantedBy=multi-user.target

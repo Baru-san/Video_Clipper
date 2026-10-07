@@ -1,0 +1,144 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+  background: #111318;
+  color: #e6e8ee;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  font-size: 1.4rem;
+}
+
+.panel {
+  background: #1a1d24;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.meta {
+  color: #9aa4b2;
+  font-size: 0.9rem;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-top: 12px;
+}
+
+.controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  color: #9aa4b2;
+  gap: 4px;
+}
+
+.controls input,
+.controls select {
+  background: #0f1115;
+  border: 1px solid #2a2f3a;
+  border-radius: 4px;
+  color: inherit;
+  padding: 6px 8px;
+  width: 110px;
+}
+
+button {
+  background: #3b82f6;
+  border: none;
+  color: white;
+  border-radius: 4px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.download {
+  display: inline-block;
+  margin-top: 8px;
+  color: #60a5fa;
+}
+
+.error {
+  color: #f87171;
+}
+
+.timeline {
+  margin-bottom: 8px;
+}
+
+.thumbstrip {
+  position: relative;
+  display: flex;
+  height: 72px;
+  border: 1px solid #2a2f3a;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.thumbstrip img {
+  height: 100%;
+  flex: 1 1 0;
+  object-fit: cover;
+  opacity: 0.7;
+}
+
+.thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  color: #6b7280;
+}
+
+.selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(59, 130, 246, 0.28);
+  border-left: 2px solid #3b82f6;
+  border-right: 2px solid #3b82f6;
+}
+
+.handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fbbf24;
+}
+
+.scrubbers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.scrubbers input[type="range"] {
+  width: 100%;
+}
+
+progress {
+  width: 100%;
+  height: 10px;
+}
