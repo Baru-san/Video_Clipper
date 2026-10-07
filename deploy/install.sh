@@ -81,6 +81,7 @@ systemctl restart video-clipper
 log "Installing nginx site (listen ${WEB_PORT}, server_name ${DOMAIN})"
 NGINX_CONF=/etc/nginx/sites-available/video-clipper
 sed -e "s/listen 80;/listen ${WEB_PORT};/" \
+    -e "s/listen \[::\]:80;/listen [::]:${WEB_PORT};/" \
     -e "s/server_name example.com;/server_name ${DOMAIN};/" \
     "${APP_DIR}/src/deploy/nginx.conf" > "${NGINX_CONF}"
 ln -sfn "${NGINX_CONF}" /etc/nginx/sites-enabled/video-clipper
