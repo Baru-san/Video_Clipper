@@ -18,11 +18,11 @@ dist/
 .env.*
 *.local
 
-# Media / uploads (runtime data)
-uploads/
-tmp/
-outputs/
-media/
+# Runtime media data (VC_DATA_DIR default `data/`); never ignore source dirs.
+/data/
+/backend/data/
+
+# Generated media artifacts (fixtures are whitelisted below).
 *.mp4
 *.mkv
 *.mov
@@ -30,6 +30,7 @@ media/
 *.wav
 *.mp3
 !tests/fixtures/**
+!**/tests/fixtures/**
 
 # OS / editor
 .DS_Store
