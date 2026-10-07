@@ -15,6 +15,16 @@ class SubtitlesMode(str, Enum):
     srt = "srt"
 
 
+class Aspect(str, Enum):
+    original = "original"
+    vertical = "vertical"
+
+
+class JobKind(str, Enum):
+    clip = "clip"
+    analyze = "analyze"
+
+
 class JobStatus(str, Enum):
     queued = "queued"
     running = "running"
@@ -48,6 +58,39 @@ class ClipRequest(BaseModel):
     scale_height: int | None = Field(default=None, ge=144, le=2160)
     subtitles: SubtitlesMode = SubtitlesMode.none
     translate_to: str | None = Field(default=None, max_length=8)
+    aspect: Aspect = Aspect.original
+    title: str | None = Field(default=None, max_length=120)
+
+
+class AnalyzeRequest(BaseModel):
+    upload_id: str = Field(min_length=1)
+    min_length: float = Field(default=15, ge=3, le=600)
+    max_length: float = Field(default=60, ge=5, le=1800)
+    max_clips: int = Field(default=10, ge=1, le=30)
+    language: str | None = Field(default=None, max_length=8)
+
+
+class Candidate(BaseModel):
+    start: float
+    end: float
+    title: str = ""
+    reason: str = ""
+    score: float = 0.0
+
+
+class BatchClipItem(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    title: str | None = Field(default=None, max_length=120)
+
+
+class BatchClipRequest(BaseModel):
+    upload_id: str = Field(min_length=1)
+    clips: list[BatchClipItem] = Field(min_length=1, max_length=30)
+    mode: ClipMode = ClipMode.copy
+    subtitles: SubtitlesMode = SubtitlesMode.none
+    translate_to: str | None = Field(default=None, max_length=8)
+    aspect: Aspect = Aspect.original
 
 
 class JobOut(BaseModel):
@@ -63,3 +106,7 @@ class JobOut(BaseModel):
     subtitle_status: str | None = None
     subtitle_url: str | None = None
     detected_language: str | None = None
+    kind: JobKind = JobKind.clip
+    aspect: Aspect = Aspect.original
+    title: str | None = None
+    candidates: list[Candidate] | None = None

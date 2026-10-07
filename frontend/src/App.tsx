@@ -9,9 +9,10 @@ import {
   type UploadResult,
 } from "./api";
 import History from "./components/History";
+import AutoClip from "./components/AutoClip";
 import Timeline from "./components/Timeline";
 
-type View = "clipper" | "history";
+type View = "clipper" | "auto" | "history";
 
 function timecode(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -115,6 +116,12 @@ export default function App() {
             Cut
           </button>
           <button
+            className={view === "auto" ? "tool active" : "tool"}
+            onClick={() => setView("auto")}
+          >
+            Auto
+          </button>
+          <button
             className={view === "history" ? "tool active" : "tool"}
             onClick={() => setView("history")}
           >
@@ -127,6 +134,10 @@ export default function App() {
       {view === "history" ? (
         <main className="workspace">
           <History />
+        </main>
+      ) : view === "auto" ? (
+        <main className="workspace">
+          <AutoClip upload={upload} />
         </main>
       ) : (
         <main className="workspace grid">

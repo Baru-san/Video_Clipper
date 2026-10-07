@@ -74,6 +74,7 @@ def reencode_cut_argv(
     crf: int = DEFAULT_CRF,
     preset: str = DEFAULT_PRESET,
     scale_height: int | None = None,
+    vertical: bool = False,
 ) -> list[str]:
     argv = [
         settings.ffmpeg_path,
@@ -96,7 +97,12 @@ def reencode_cut_argv(
         "-pix_fmt",
         "yuv420p",
     ]
-    if scale_height:
+    if vertical:
+        argv += [
+            "-vf",
+            "crop='floor(min(iw,ih*9/16)/2)*2':'floor(ih/2)*2',scale=1080:1920",
+        ]
+    elif scale_height:
         argv += ["-vf", f"scale=-2:{int(scale_height)}"]
     argv += [
         "-c:a",
@@ -149,6 +155,24 @@ def extract_audio_argv(path: str, output: str) -> list[str]:
         "16000",
         "-c:a",
         "flac",
+        output,
+    ]
+
+
+def slice_audio_argv(path: str, output: str, start: float, duration: float) -> list[str]:
+    """Stream-copy a slice out of an already-extracted audio file."""
+    return [
+        settings.ffmpeg_path,
+        "-hide_banner",
+        "-y",
+        "-ss",
+        _t(start),
+        "-t",
+        _t(duration),
+        "-i",
+        path,
+        "-c",
+        "copy",
         output,
     ]
 

@@ -52,3 +52,17 @@ def test_extract_audio_argv_is_16k_mono_flac():
     assert argv[argv.index("-ar") + 1] == "16000"
     assert argv[argv.index("-c:a") + 1] == "flac"
     assert argv[-1] == "/out.flac"
+
+
+def test_reencode_vertical_crops_to_9x16():
+    argv = cb.reencode_cut_argv("/i.mp4", "/o.mp4", 0, 5, vertical=True)
+    vf = argv[argv.index("-vf") + 1]
+    assert "crop=" in vf and "scale=1080:1920" in vf
+
+
+def test_slice_audio_argv_stream_copies():
+    argv = cb.slice_audio_argv("/a.flac", "/chunk.flac", 600, 600)
+    assert argv[argv.index("-ss") + 1] == "600.000"
+    assert argv[argv.index("-t") + 1] == "600.000"
+    assert argv[argv.index("-c") + 1] == "copy"
+    assert argv[-1] == "/chunk.flac"

@@ -9,11 +9,24 @@ from pathlib import Path
 
 from app.config import settings
 from app.core import resources
-from app.media import stt, translate
-from app.media.command_builder import copy_cut_argv, extract_audio_argv, reencode_cut_argv
+from app.media import analyze, stt, translate
+from app.media.command_builder import (
+    copy_cut_argv,
+    extract_audio_argv,
+    reencode_cut_argv,
+    slice_audio_argv,
+)
 from app.media.ffmpeg import FFmpegError, FFmpegRunner, Progress, cancel_process
-from app.media.subtitles import build_srt
-from app.models import ClipMode, JobOut, JobStatus, SubtitlesMode
+from app.media.subtitles import Transcript, build_srt
+from app.models import (
+    Aspect,
+    Candidate,
+    ClipMode,
+    JobKind,
+    JobOut,
+    JobStatus,
+    SubtitlesMode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +50,15 @@ class Job:
     warning: str | None = None
     subtitles: SubtitlesMode = SubtitlesMode.none
     translate_to: str | None = None
+    aspect: Aspect = Aspect.original
+    title: str | None = None
+    kind: JobKind = JobKind.clip
+    source_duration: float = 0.0
+    analyze_min_length: float = 15.0
+    analyze_max_length: float = 60.0
+    analyze_max_clips: int = 10
+    analyze_language: str | None = None
+    candidates: list[Candidate] | None = None
     phase: str | None = None
     subtitle_status: str | None = None
     subtitle_path: str | None = None
@@ -71,6 +93,10 @@ class Job:
             subtitle_status=self.subtitle_status,
             subtitle_url=subtitle_url,
             detected_language=self.detected_language,
+            kind=self.kind,
+            aspect=self.aspect,
+            title=self.title,
+            candidates=self.candidates,
         )
 
 
@@ -119,6 +145,14 @@ class JobQueue:
         warning: str | None = None,
         subtitles: SubtitlesMode = SubtitlesMode.none,
         translate_to: str | None = None,
+        aspect: Aspect = Aspect.original,
+        title: str | None = None,
+        kind: JobKind = JobKind.clip,
+        source_duration: float = 0.0,
+        analyze_min_length: float = 15.0,
+        analyze_max_length: float = 60.0,
+        analyze_max_clips: int = 10,
+        analyze_language: str | None = None,
     ) -> Job:
         if self.active_count() >= self._max_size:
             raise QueueFullError("too many pending jobs")
@@ -136,6 +170,14 @@ class JobQueue:
             warning=warning,
             subtitles=subtitles,
             translate_to=translate_to,
+            aspect=aspect,
+            title=title,
+            kind=kind,
+            source_duration=source_duration,
+            analyze_min_length=analyze_min_length,
+            analyze_max_length=analyze_max_length,
+            analyze_max_clips=analyze_max_clips,
+            analyze_language=analyze_language,
         )
         self._jobs[job.id] = job
         self._queue.put_nowait(job)
@@ -266,6 +308,66 @@ class JobQueue:
                 pass
             self._broadcast(job)
 
+    async def _transcribe_source(
+        self, job: Job, audio_path: str, duration: float
+    ) -> Transcript:
+        language = job.analyze_language
+        if duration <= settings.stt_chunk_seconds:
+            return await stt.transcribe(audio_path, language)
+        parts: list[tuple[float, Transcript]] = []
+        start = 0.0
+        index = 0
+        while start < duration:
+            length = min(settings.stt_chunk_seconds, duration - start)
+            chunk = settings.tmp_dir / f"{job.id}_{index}.flac"
+            try:
+                await self._runner.run(
+                    slice_audio_argv(audio_path, str(chunk), start, length)
+                )
+                parts.append((start, await stt.transcribe(str(chunk), language)))
+            finally:
+                chunk.unlink(missing_ok=True)
+            start += length
+            index += 1
+        return stt.merge_transcripts(parts)
+
+    async def _run_analyze(self, job: Job) -> None:
+        audio_path = settings.tmp_dir / f"{job.id}_full.flac"
+        try:
+            job.phase = "audio"
+            self._broadcast(job)
+            await self._runner.run(extract_audio_argv(job.source, str(audio_path)))
+
+            duration = job.source_duration
+            job.phase = "transcribe"
+            self._broadcast(job)
+            transcript = await self._transcribe_source(job, str(audio_path), duration)
+            job.detected_language = transcript.language or None
+
+            job.phase = "analyze"
+            self._broadcast(job)
+            job.candidates = await analyze.extract_highlights(
+                transcript,
+                duration,
+                job.analyze_min_length,
+                job.analyze_max_length,
+                job.analyze_max_clips,
+            )
+            job.status = JobStatus.done
+            job.percent = 100.0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("analysis failed for job %s: %s", job.id, exc)
+            job.status = JobStatus.failed
+            job.error = str(exc)[-2000:]
+        finally:
+            job.phase = None
+            job.finished_at = datetime.now(timezone.utc)
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._broadcast(job)
+
     async def _run_worker(self) -> None:
         while True:
             job = await self._queue.get()
@@ -292,13 +394,18 @@ class JobQueue:
         job.status = JobStatus.running
         self._broadcast(job)
 
-        if job.mode == ClipMode.reencode:
+        if job.kind == JobKind.analyze:
+            await self._run_analyze(job)
+            return
+
+        if job.mode == ClipMode.reencode or job.aspect == Aspect.vertical:
             argv = reencode_cut_argv(
                 job.source,
                 job.output,
                 job.start,
                 job.duration,
                 scale_height=job.scale_height,
+                vertical=(job.aspect == Aspect.vertical),
             )
         else:
             argv = copy_cut_argv(job.source, job.output, job.start, job.duration)

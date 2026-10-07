@@ -17,6 +17,14 @@ export interface UploadResult {
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
+export interface Candidate {
+  start: number;
+  end: number;
+  title: string;
+  reason: string;
+  score: number;
+}
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -30,6 +38,10 @@ export interface Job {
   subtitle_status: string | null;
   subtitle_url: string | null;
   detected_language: string | null;
+  kind: "clip" | "analyze";
+  aspect: "original" | "vertical";
+  title: string | null;
+  candidates: Candidate[] | null;
 }
 
 async function asError(response: Response): Promise<never> {
@@ -83,6 +95,8 @@ export async function createClip(payload: {
   scale_height?: number | null;
   subtitles?: "none" | "srt";
   translate_to?: string | null;
+  aspect?: "original" | "vertical";
+  title?: string | null;
 }): Promise<Job> {
   const response = await fetch("/api/clips", {
     method: "POST",
@@ -101,6 +115,38 @@ export async function getJob(id: string): Promise<Job> {
 
 export async function cancelJob(id: string): Promise<void> {
   await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+}
+
+export async function analyzeVideo(payload: {
+  upload_id: string;
+  min_length: number;
+  max_length: number;
+  max_clips: number;
+}): Promise<Job> {
+  const response = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) return asError(response);
+  return (await response.json()) as Job;
+}
+
+export async function createClipsBatch(payload: {
+  upload_id: string;
+  clips: { start: number; end: number; title?: string | null }[];
+  mode: "copy" | "reencode";
+  subtitles?: "none" | "srt";
+  translate_to?: string | null;
+  aspect?: "original" | "vertical";
+}): Promise<Job[]> {
+  const response = await fetch("/api/clips/batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) return asError(response);
+  return (await response.json()) as Job[];
 }
 
 export interface Resource {

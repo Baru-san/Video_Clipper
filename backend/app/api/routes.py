@@ -21,14 +21,18 @@ from app.core.uploads import (
     save_metadata,
 )
 from app.media import probe as probe_module
-from app.media import stt, translate
+from app.media import analyze, stt, translate
 from app.media.command_builder import thumbnail_argv
 from app.media.ffmpeg import FFmpegRunner
 from app.media.keyframes import get_keyframes, snap_to_keyframe
 from app.maintenance.cleanup import has_free_space
 from app.models import (
+    AnalyzeRequest,
+    Aspect,
+    BatchClipRequest,
     ClipMode,
     ClipRequest,
+    JobKind,
     JobOut,
     MediaInfoOut,
     SubtitlesMode,
@@ -168,40 +172,45 @@ async def get_job(request: Request, job_id: str) -> JobOut:
     return job.to_out()
 
 
-@router.post("/clips", response_model=JobOut)
-async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
-    try:
-        source, info = resolve_upload(payload.upload_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=404, detail="upload not found") from exc
-
-    if payload.start >= payload.end:
+async def _prepare_clip(
+    queue: JobQueue,
+    *,
+    upload_id: str,
+    source: Path,
+    info,
+    start: float,
+    end: float,
+    mode: ClipMode,
+    scale_height: int | None,
+    subtitles: SubtitlesMode,
+    translate_to: str | None,
+    aspect: Aspect,
+    title: str | None,
+):
+    if start >= end:
         raise HTTPException(status_code=422, detail="start must be before end")
-    if payload.end > info.duration + 0.05:
+    if end > info.duration + 0.05:
         raise HTTPException(status_code=422, detail="end exceeds video duration")
 
-    effective_start = payload.start
+    is_lossless = mode == ClipMode.copy and aspect == Aspect.original
+    effective_start = start
     warning: str | None = None
-    if payload.mode == ClipMode.copy:
+    if is_lossless:
         try:
             frames = await get_keyframes(str(source))
         except Exception:  # noqa: BLE001 - fall back to requested start
             frames = []
-        snapped = snap_to_keyframe(frames, payload.start) if frames else payload.start
-        if abs(snapped - payload.start) > 0.05:
+        snapped = snap_to_keyframe(frames, start) if frames else start
+        if abs(snapped - start) > 0.05:
             effective_start = snapped
             warning = (
                 f"Lossless cut starts at the nearest keyframe "
-                f"({snapped:.2f}s instead of {payload.start:.2f}s). "
+                f"({snapped:.2f}s instead of {start:.2f}s). "
                 "Use Precise mode for frame-accurate cuts."
             )
 
-    duration = payload.end - effective_start
-    output_id = uuid.uuid4().hex
-    output = settings.outputs_dir / f"{output_id}.mp4"
-    source_name = get_upload_name(payload.upload_id)
-
-    if payload.subtitles == SubtitlesMode.srt:
+    duration = end - effective_start
+    if subtitles == SubtitlesMode.srt:
         if not info.has_audio:
             raise HTTPException(status_code=422, detail="video has no audio track")
         if duration > settings.subtitle_max_duration_seconds:
@@ -211,27 +220,122 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
             )
         if not stt.is_configured():
             raise HTTPException(status_code=503, detail="subtitles are not available")
-        if payload.translate_to:
-            if payload.translate_to not in settings.subtitle_targets:
+        if translate_to:
+            if translate_to not in settings.subtitle_targets:
                 raise HTTPException(status_code=422, detail="unsupported translation target")
             if not translate.is_configured():
                 raise HTTPException(status_code=503, detail="translation is not available")
+
+    output = settings.outputs_dir / f"{uuid.uuid4().hex}.mp4"
+    try:
+        return queue.submit(
+            upload_id=upload_id,
+            source=str(source),
+            output=str(output),
+            start=effective_start,
+            duration=duration,
+            mode=mode,
+            scale_height=scale_height,
+            source_name=get_upload_name(upload_id),
+            requested_start=start,
+            effective_start=effective_start,
+            warning=warning,
+            subtitles=subtitles,
+            translate_to=translate_to,
+            aspect=aspect,
+            title=title,
+        )
+    except QueueFullError as exc:
+        raise HTTPException(status_code=429, detail="server busy, try again later") from exc
+
+
+@router.post("/clips", response_model=JobOut)
+async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
+    try:
+        source, info = resolve_upload(payload.upload_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="upload not found") from exc
+
+    job = await _prepare_clip(
+        _queue(request),
+        upload_id=payload.upload_id,
+        source=source,
+        info=info,
+        start=payload.start,
+        end=payload.end,
+        mode=payload.mode,
+        scale_height=payload.scale_height,
+        subtitles=payload.subtitles,
+        translate_to=payload.translate_to,
+        aspect=payload.aspect,
+        title=payload.title,
+    )
+    return job.to_out()
+
+
+@router.post("/clips/batch", response_model=list[JobOut])
+async def create_clips_batch(request: Request, payload: BatchClipRequest) -> list[JobOut]:
+    try:
+        source, info = resolve_upload(payload.upload_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="upload not found") from exc
+
+    jobs = []
+    for item in payload.clips:
+        job = await _prepare_clip(
+            _queue(request),
+            upload_id=payload.upload_id,
+            source=source,
+            info=info,
+            start=item.start,
+            end=item.end,
+            mode=payload.mode,
+            scale_height=None,
+            subtitles=payload.subtitles,
+            translate_to=payload.translate_to,
+            aspect=payload.aspect,
+            title=item.title,
+        )
+        jobs.append(job.to_out())
+    return jobs
+
+
+@router.post("/analyze", response_model=JobOut)
+async def create_analyze(request: Request, payload: AnalyzeRequest) -> JobOut:
+    try:
+        source, info = resolve_upload(payload.upload_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="upload not found") from exc
+
+    if not info.has_audio:
+        raise HTTPException(status_code=422, detail="video has no audio track")
+    if info.duration > settings.analyze_max_source_seconds:
+        raise HTTPException(
+            status_code=422,
+            detail=f"video too long for analysis (max {settings.analyze_max_source_seconds:.0f}s)",
+        )
+    if payload.min_length >= payload.max_length:
+        raise HTTPException(status_code=422, detail="min_length must be less than max_length")
+    if not stt.is_configured():
+        raise HTTPException(status_code=503, detail="analysis is not available")
+    if not analyze.is_configured():
+        raise HTTPException(status_code=503, detail="analysis is not available")
 
     try:
         job = _queue(request).submit(
             upload_id=payload.upload_id,
             source=str(source),
-            output=str(output),
-            start=effective_start,
-            duration=duration,
-            mode=payload.mode,
-            scale_height=payload.scale_height,
-            source_name=source_name,
-            requested_start=payload.start,
-            effective_start=effective_start,
-            warning=warning,
-            subtitles=payload.subtitles,
-            translate_to=payload.translate_to,
+            output="",
+            start=0.0,
+            duration=info.duration,
+            mode=ClipMode.copy,
+            source_name=get_upload_name(payload.upload_id),
+            kind=JobKind.analyze,
+            source_duration=info.duration,
+            analyze_min_length=payload.min_length,
+            analyze_max_length=payload.max_length,
+            analyze_max_clips=min(payload.max_clips, settings.analyze_max_clips),
+            analyze_language=payload.language,
         )
     except QueueFullError as exc:
         raise HTTPException(status_code=429, detail="server busy, try again later") from exc

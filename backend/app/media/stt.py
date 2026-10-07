@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
-from app.media.subtitles import Transcript, parse_verbose_json
+from app.media.subtitles import Segment, Transcript, parse_verbose_json
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,25 @@ MAX_ATTEMPTS = 3
 
 class STTError(RuntimeError):
     pass
+
+
+def merge_transcripts(parts: list[tuple[float, Transcript]]) -> Transcript:
+    """Merge (offset, transcript) chunks into one timeline."""
+    language = ""
+    segments: list[Segment] = []
+    for offset, transcript in parts:
+        if not language and transcript.language:
+            language = transcript.language
+        for segment in transcript.segments:
+            segments.append(
+                Segment(
+                    start=segment.start + offset,
+                    end=segment.end + offset,
+                    text=segment.text,
+                )
+            )
+    segments.sort(key=lambda item: item.start)
+    return Transcript(language=language, segments=segments)
 
 
 def is_configured() -> bool:

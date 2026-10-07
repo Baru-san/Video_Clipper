@@ -93,6 +93,23 @@ class Settings:
         )
     )
 
+    # --- Auto-clip / highlight analysis ---
+    analyze_max_source_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("VC_ANALYZE_MAX_SOURCE", "1800"))
+    )
+    analyze_max_clips: int = field(
+        default_factory=lambda: _env_int("VC_ANALYZE_MAX_CLIPS", 10)
+    )
+    analyze_default_min_length: float = field(
+        default_factory=lambda: float(os.environ.get("VC_ANALYZE_MIN_LEN", "15"))
+    )
+    analyze_default_max_length: float = field(
+        default_factory=lambda: float(os.environ.get("VC_ANALYZE_MAX_LEN", "60"))
+    )
+    stt_chunk_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("VC_STT_CHUNK_SECONDS", "600"))
+    )
+
     @property
     def uploads_dir(self) -> Path:
         return self.base_dir / "uploads"
