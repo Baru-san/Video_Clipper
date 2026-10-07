@@ -17,6 +17,39 @@ The app is exposed as `https://<domain>/` (static) and `https://<domain>/api/` (
 
 ---
 
+## Fast path (one script)
+
+`deploy/install.sh` performs sections 1–8 in one idempotent run. Run it as root from the
+server console:
+
+```bash
+# on your machine: copy the repo to the server, or clone it there, then:
+sudo WEB_PORT=80 DOMAIN=example.com bash deploy/install.sh
+```
+
+It installs packages, creates the `videoclip` user, clones to `/srv/video-clipper/src`,
+builds the venv + frontend, installs the systemd unit, configures Nginx, and health-checks
+the API. Re-run it to update. The manual steps below are the same thing, spelled out.
+
+### NAT VPS / VNC-only servers
+
+If the VPS has no public IP (NAT VPS) and you only reach it through a web VNC console:
+
+- You cannot SSH in from elsewhere; run everything in the console's terminal.
+- The provider maps public ports to internal ones. Set `WEB_PORT` to the **internal** port
+  that the provider forwards to (often `80`, sometimes a high port), then reach the app at
+  `http://<provider-host>:<provider-public-port>/`.
+- **Let's Encrypt (section 8) only works if** the provider forwards a public port 80 (and
+  optionally 443) to this VM *and* a domain points at the provider's host. Otherwise skip
+  HTTPS and use the mapped HTTP port, or terminate TLS at a proxy you control.
+- Example for a provider mapping public `8080` → internal `80`:
+  ```bash
+  sudo WEB_PORT=80 DOMAIN=_ bash deploy/install.sh
+  # browse to http://<provider-host>:8080/
+  ```
+
+---
+
 ## 0. Prerequisites
 
 - A Debian 12 (or Ubuntu 22.04+) VPS with root/sudo.
