@@ -28,7 +28,13 @@ function phaseLabel(phase: string | null): string {
   }
 }
 
-export default function AutoClip({ upload }: { upload: UploadResult | null }) {
+export default function AutoClip({
+  upload,
+  onFineTune,
+}: {
+  upload: UploadResult | null;
+  onFineTune?: (start: number, end: number) => void;
+}) {
   const [minLen, setMinLen] = useState(15);
   const [maxLen, setMaxLen] = useState(60);
   const [maxClips, setMaxClips] = useState(8);
@@ -199,6 +205,14 @@ export default function AutoClip({ upload }: { upload: UploadResult | null }) {
                       {c.score ? ` · score ${c.score.toFixed(2)}` : ""}
                     </div>
                     {c.reason && <div className="candidate-reason">{c.reason}</div>}
+                    {onFineTune && (
+                      <button
+                        className="linklike"
+                        onClick={() => onFineTune(c.start, c.end)}
+                      >
+                        Fine-tune manually
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}

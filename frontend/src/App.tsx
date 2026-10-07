@@ -113,13 +113,13 @@ export default function App() {
             className={view === "clipper" ? "tool active" : "tool"}
             onClick={() => setView("clipper")}
           >
-            Cut
+            Manual Trim
           </button>
           <button
             className={view === "auto" ? "tool active" : "tool"}
             onClick={() => setView("auto")}
           >
-            Auto
+            AI Trim
           </button>
           <button
             className={view === "history" ? "tool active" : "tool"}
@@ -137,7 +137,14 @@ export default function App() {
         </main>
       ) : view === "auto" ? (
         <main className="workspace">
-          <AutoClip upload={upload} />
+          <AutoClip
+            upload={upload}
+            onFineTune={(s, e) => {
+              setStart(s);
+              setEnd(e);
+              setView("clipper");
+            }}
+          />
         </main>
       ) : (
         <main className="workspace grid">
@@ -158,6 +165,14 @@ export default function App() {
                   }}
                 />
               </label>
+
+              <p className="mode-hint">
+                Trim manually below, or{" "}
+                <button className="linklike" onClick={() => setView("auto")}>
+                  let AI suggest clips
+                </button>
+                .
+              </p>
 
               {uploadPercent !== null && (
                 <div className="meter">
