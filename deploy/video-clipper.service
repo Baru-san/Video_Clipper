@@ -13,6 +13,11 @@ Environment=VC_MAX_UPLOAD_BYTES=524288000
 Environment=VC_RETENTION_HOURS=24
 Environment=VC_CLEANUP_INTERVAL=900
 Environment=VC_MIN_FREE_BYTES=1073741824
+# Subtitles: Groq (STT) + DeepSeek (translation). Keys live in the env file.
+EnvironmentFile=-/etc/video-clipper.env
+Environment=VC_STT_MODEL=whisper-large-v3-turbo
+Environment=VC_TRANSLATE_MODEL=deepseek-flash
+Environment=VC_SUBTITLE_TARGETS=en,id
 ExecStart=/srv/video-clipper/.venv/bin/uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=3

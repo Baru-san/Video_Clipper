@@ -72,7 +72,15 @@ def _decorate(data: dict) -> dict:
     data["size"] = size
     data["download_url"] = f"/api/resources/{resource_id}/download"
     data["thumbnail_url"] = _thumbnail_url(data.get("upload_id", ""))
+    subtitle = subtitle_path(resource_id)
+    data["subtitle_url"] = (
+        f"/api/resources/{resource_id}/subtitles.srt" if subtitle.is_file() else None
+    )
     return data
+
+
+def subtitle_path(resource_id: str) -> Path:
+    return settings.outputs_dir / f"{resource_id}.srt"
 
 
 def _thumbnail_url(upload_id: str) -> str | None:
@@ -100,6 +108,7 @@ def delete(resource_id: str) -> bool:
 
     output.unlink(missing_ok=True)
     meta.unlink(missing_ok=True)
+    subtitle_path(resource_id).unlink(missing_ok=True)
 
     if upload_id and not _has_other_outputs(upload_id, resource_id):
         delete_upload(upload_id)

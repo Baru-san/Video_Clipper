@@ -82,18 +82,29 @@ export default function History() {
                 <span className="media-card-badge">
                   {resource.mode === "reencode" ? "Precise" : "Lossless"}
                 </span>
+                {resource.subtitle_url && (
+                  <span className="media-card-badge cc">CC</span>
+                )}
               </div>
               <div className="media-card-body">
                 <div className="media-card-name">{resource.name || "clip"}</div>
                 <div className="media-card-sub">{formatRange(resource)}</div>
                 <div className="media-card-sub">
                   {formatSize(resource.size)} · {formatWhen(resource.created)}
+                  {resource.translated_to
+                    ? ` · ${resource.translated_to.toUpperCase()} subs`
+                    : ""}
                 </div>
               </div>
               <div className="media-card-actions">
                 <a className="primary small link" href={resource.download_url}>
                   Download
                 </a>
+                {resource.subtitle_url && (
+                  <a className="ghost small link" href={resource.subtitle_url}>
+                    .srt
+                  </a>
+                )}
                 <button className="danger small" onClick={() => void handleDelete(resource)}>
                   Delete
                 </button>

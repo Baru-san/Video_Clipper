@@ -132,6 +132,27 @@ def thumbnail_argv(path: str, out_pattern: str, fps: float, width: int = 160) ->
     ]
 
 
+def extract_audio_argv(path: str, output: str) -> list[str]:
+    """Extract a 16 kHz mono FLAC track for speech-to-text (small + lossless)."""
+    return [
+        settings.ffmpeg_path,
+        "-hide_banner",
+        "-y",
+        "-i",
+        path,
+        "-vn",
+        "-map",
+        "0:a:0",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "flac",
+        output,
+    ]
+
+
 def build_concat_list(paths: list[str]) -> str:
     lines = []
     for path in paths:

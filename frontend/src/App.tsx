@@ -20,6 +20,21 @@ function timecode(seconds: number): string {
   return `${mm}:${ss}`;
 }
 
+function phaseLabel(phase: string): string {
+  switch (phase) {
+    case "audio":
+      return "extracting audio…";
+    case "transcribe":
+      return "transcribing…";
+    case "translate":
+      return "translating…";
+    case "write":
+      return "writing subtitles…";
+    default:
+      return phase;
+  }
+}
+
 export default function App() {
   const [view, setView] = useState<View>("clipper");
   const [upload, setUpload] = useState<UploadResult | null>(null);
@@ -27,6 +42,8 @@ export default function App() {
   const [start, setStart] = useState(0);
   const [end, setEnd] = useState(0);
   const [mode, setMode] = useState<"copy" | "reencode">("copy");
+  const [subtitles, setSubtitles] = useState<"none" | "srt">("none");
+  const [translateTo, setTranslateTo] = useState<string>("");
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -59,6 +76,8 @@ export default function App() {
         start,
         end,
         mode,
+        subtitles,
+        translate_to: subtitles === "srt" && translateTo ? translateTo : null,
       });
       setJob(created);
       sourceRef.current?.close();
@@ -72,7 +91,7 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "clip failed");
     }
-  }, [upload, start, end, mode]);
+  }, [upload, start, end, mode, subtitles, translateTo]);
 
   const handleCancel = useCallback(async () => {
     if (!job) return;
@@ -189,11 +208,15 @@ export default function App() {
                   <div className="job-line">
                     <span className={`badge ${job.status}`}>{job.status}</span>
                     <span>{job.percent.toFixed(0)}%</span>
+                    {job.phase && <span className="job-phase">{phaseLabel(job.phase)}</span>}
                   </div>
                   <div className="meter">
                     <div className="meter-fill" style={{ width: `${job.percent}%` }} />
                   </div>
                   {job.warning && <p className="warning">{job.warning}</p>}
+                  {job.subtitle_status === "failed" && (
+                    <p className="warning">Subtitle generation failed — the clip is still available.</p>
+                  )}
                   {job.error && <p className="error">{job.error}</p>}
                   {(job.status === "queued" || job.status === "running") && (
                     <button className="ghost" onClick={handleCancel}>
@@ -250,6 +273,31 @@ export default function App() {
                 </select>
               </label>
 
+              <label className="field">
+                <span>Subtitles</span>
+                <select
+                  value={subtitles}
+                  onChange={(e) => setSubtitles(e.target.value as "none" | "srt")}
+                >
+                  <option value="none">Off</option>
+                  <option value="srt">Generate (SRT)</option>
+                </select>
+              </label>
+
+              {subtitles === "srt" && (
+                <label className="field">
+                  <span>Translate to</span>
+                  <select
+                    value={translateTo}
+                    onChange={(e) => setTranslateTo(e.target.value)}
+                  >
+                    <option value="">None</option>
+                    <option value="en">English</option>
+                    <option value="id">Bahasa Indonesia</option>
+                  </select>
+                </label>
+              )}
+
               <button
                 className="primary"
                 onClick={handleClip}
@@ -263,6 +311,11 @@ export default function App() {
                   <a className="primary link" href={job.download_url}>
                     Download Clip
                   </a>
+                  {job.subtitle_url && (
+                    <a className="ghost link" href={job.subtitle_url}>
+                      Download Subtitles (.srt)
+                    </a>
+                  )}
                   <p className="note">Saved to Resources — kept 24h.</p>
                 </>
               )}

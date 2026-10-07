@@ -26,6 +26,10 @@ export interface Job {
   requested_start: number | null;
   effective_start: number | null;
   warning: string | null;
+  phase: string | null;
+  subtitle_status: string | null;
+  subtitle_url: string | null;
+  detected_language: string | null;
 }
 
 async function asError(response: Response): Promise<never> {
@@ -77,6 +81,8 @@ export async function createClip(payload: {
   end: number;
   mode: "copy" | "reencode";
   scale_height?: number | null;
+  subtitles?: "none" | "srt";
+  translate_to?: string | null;
 }): Promise<Job> {
   const response = await fetch("/api/clips", {
     method: "POST",
@@ -109,6 +115,9 @@ export interface Resource {
   size: number;
   download_url: string;
   thumbnail_url: string | null;
+  subtitle_url: string | null;
+  detected_language: string | null;
+  translated_to: string | null;
 }
 
 export async function listResources(): Promise<Resource[]> {

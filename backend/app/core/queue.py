@@ -9,9 +9,11 @@ from pathlib import Path
 
 from app.config import settings
 from app.core import resources
+from app.media import stt, translate
+from app.media.command_builder import copy_cut_argv, extract_audio_argv, reencode_cut_argv
 from app.media.ffmpeg import FFmpegError, FFmpegRunner, Progress, cancel_process
-from app.media.command_builder import copy_cut_argv, reencode_cut_argv
-from app.models import ClipMode, JobOut, JobStatus
+from app.media.subtitles import build_srt
+from app.models import ClipMode, JobOut, JobStatus, SubtitlesMode
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,12 @@ class Job:
     requested_start: float = 0.0
     effective_start: float = 0.0
     warning: str | None = None
+    subtitles: SubtitlesMode = SubtitlesMode.none
+    translate_to: str | None = None
+    phase: str | None = None
+    subtitle_status: str | None = None
+    subtitle_path: str | None = None
+    detected_language: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: JobStatus = JobStatus.queued
     percent: float = 0.0
@@ -45,6 +53,11 @@ class Job:
 
     def to_out(self) -> JobOut:
         download_url = f"/api/jobs/{self.id}/download" if self.status == JobStatus.done else None
+        subtitle_url = (
+            f"/api/jobs/{self.id}/subtitles.srt"
+            if self.subtitle_status == "done"
+            else None
+        )
         return JobOut(
             id=self.id,
             status=self.status,
@@ -54,6 +67,10 @@ class Job:
             requested_start=self.requested_start,
             effective_start=self.effective_start,
             warning=self.warning,
+            phase=self.phase,
+            subtitle_status=self.subtitle_status,
+            subtitle_url=subtitle_url,
+            detected_language=self.detected_language,
         )
 
 
@@ -100,6 +117,8 @@ class JobQueue:
         requested_start: float | None = None,
         effective_start: float | None = None,
         warning: str | None = None,
+        subtitles: SubtitlesMode = SubtitlesMode.none,
+        translate_to: str | None = None,
     ) -> Job:
         if self.active_count() >= self._max_size:
             raise QueueFullError("too many pending jobs")
@@ -115,6 +134,8 @@ class JobQueue:
             requested_start=start if requested_start is None else requested_start,
             effective_start=start if effective_start is None else effective_start,
             warning=warning,
+            subtitles=subtitles,
+            translate_to=translate_to,
         )
         self._jobs[job.id] = job
         self._queue.put_nowait(job)
@@ -197,10 +218,53 @@ class JobQueue:
                     "duration": job.duration,
                     "mode": job.mode.value,
                     "created": job.created_at.timestamp(),
+                    "detected_language": job.detected_language,
+                    "translated_to": job.translate_to
+                    if (job.subtitles == SubtitlesMode.srt and job.subtitle_status == "done")
+                    else None,
                 }
             )
         except OSError:
             logger.warning("failed to record resource for job %s", job.id, exc_info=True)
+
+    async def _run_subtitles(self, job: Job) -> None:
+        resource_id = Path(job.output).stem
+        srt_path = settings.outputs_dir / f"{resource_id}.srt"
+        audio_path = settings.tmp_dir / f"{job.id}.flac"
+        job.subtitle_status = "running"
+        try:
+            job.phase = "audio"
+            self._broadcast(job)
+            await self._runner.run(extract_audio_argv(job.output, str(audio_path)))
+
+            job.phase = "transcribe"
+            self._broadcast(job)
+            transcript = await stt.transcribe(str(audio_path))
+            job.detected_language = transcript.language or None
+            segments = transcript.segments
+
+            if job.translate_to and job.translate_to != transcript.language:
+                job.phase = "translate"
+                self._broadcast(job)
+                segments = await translate.translate_segments(
+                    segments, job.translate_to, transcript.language
+                )
+
+            job.phase = "write"
+            self._broadcast(job)
+            srt_path.write_text(build_srt(segments), encoding="utf-8")
+            job.subtitle_path = str(srt_path)
+            job.subtitle_status = "done"
+        except Exception as exc:  # noqa: BLE001 - clip stays valid without subtitles
+            logger.warning("subtitle generation failed for job %s: %s", job.id, exc)
+            job.subtitle_status = "failed"
+        finally:
+            job.phase = None
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._broadcast(job)
 
     async def _run_worker(self) -> None:
         while True:
@@ -263,8 +327,10 @@ class JobQueue:
             if job.cancel_requested:
                 job.status = JobStatus.cancelled
             else:
-                job.status = JobStatus.done
                 job.percent = 100.0
+                if job.subtitles == SubtitlesMode.srt:
+                    await self._run_subtitles(job)
+                job.status = JobStatus.done
                 self._record_resource(job)
         finally:
             job.proc = None

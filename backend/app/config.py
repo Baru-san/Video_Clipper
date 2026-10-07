@@ -46,6 +46,53 @@ class Settings:
         default_factory=lambda: _env_int("VC_MAX_QUEUE_SIZE", 20)
     )
 
+    # --- Subtitles / speech-to-text (Groq) ---
+    stt_base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "VC_STT_BASE_URL", "https://api.groq.com/openai/v1"
+        )
+    )
+    stt_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "VC_STT_MODEL", "whisper-large-v3-turbo"
+        )
+    )
+    groq_api_key: str = field(
+        default_factory=lambda: os.environ.get("GROQ_API_KEY", "")
+    )
+    stt_max_bytes: int = field(
+        default_factory=lambda: _env_int("VC_STT_MAX_BYTES", 25 * 1024 * 1024)
+    )
+    subtitle_max_duration_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("VC_SUBTITLE_MAX_DURATION", "1200"))
+    )
+    subtitle_timeout_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("VC_SUBTITLE_TIMEOUT", "300"))
+    )
+
+    # --- Translation (DeepSeek, OpenAI-compatible) ---
+    translate_base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "VC_TRANSLATE_BASE_URL", "https://api.deepseek.com"
+        )
+    )
+    translate_model: str = field(
+        default_factory=lambda: os.environ.get("VC_TRANSLATE_MODEL", "deepseek-flash")
+    )
+    deepseek_api_key: str = field(
+        default_factory=lambda: os.environ.get("DEEPSEEK_API_KEY", "")
+    )
+    translate_batch_size: int = field(
+        default_factory=lambda: _env_int("VC_TRANSLATE_BATCH_SIZE", 30)
+    )
+    subtitle_targets: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            t.strip()
+            for t in os.environ.get("VC_SUBTITLE_TARGETS", "en,id").split(",")
+            if t.strip()
+        )
+    )
+
     @property
     def uploads_dir(self) -> Path:
         return self.base_dir / "uploads"

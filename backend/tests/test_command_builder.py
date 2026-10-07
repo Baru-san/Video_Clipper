@@ -43,3 +43,12 @@ def test_build_concat_list_escapes_quotes():
     assert "file '/a/b.mp4'" in content
     assert content.endswith("\n")
     assert "it'\\''s" in content
+
+
+def test_extract_audio_argv_is_16k_mono_flac():
+    argv = cb.extract_audio_argv("/in.mp4", "/out.flac")
+    assert "-vn" in argv
+    assert argv[argv.index("-ac") + 1] == "1"
+    assert argv[argv.index("-ar") + 1] == "16000"
+    assert argv[argv.index("-c:a") + 1] == "flac"
+    assert argv[-1] == "/out.flac"

@@ -21,11 +21,19 @@ from app.core.uploads import (
     save_metadata,
 )
 from app.media import probe as probe_module
+from app.media import stt, translate
 from app.media.command_builder import thumbnail_argv
 from app.media.ffmpeg import FFmpegRunner
 from app.media.keyframes import get_keyframes, snap_to_keyframe
 from app.maintenance.cleanup import has_free_space
-from app.models import ClipMode, ClipRequest, JobOut, MediaInfoOut, UploadOut
+from app.models import (
+    ClipMode,
+    ClipRequest,
+    JobOut,
+    MediaInfoOut,
+    SubtitlesMode,
+    UploadOut,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -193,6 +201,22 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
     output = settings.outputs_dir / f"{output_id}.mp4"
     source_name = get_upload_name(payload.upload_id)
 
+    if payload.subtitles == SubtitlesMode.srt:
+        if not info.has_audio:
+            raise HTTPException(status_code=422, detail="video has no audio track")
+        if duration > settings.subtitle_max_duration_seconds:
+            raise HTTPException(
+                status_code=422,
+                detail=f"clip too long for subtitles (max {settings.subtitle_max_duration_seconds:.0f}s)",
+            )
+        if not stt.is_configured():
+            raise HTTPException(status_code=503, detail="subtitles are not available")
+        if payload.translate_to:
+            if payload.translate_to not in settings.subtitle_targets:
+                raise HTTPException(status_code=422, detail="unsupported translation target")
+            if not translate.is_configured():
+                raise HTTPException(status_code=503, detail="translation is not available")
+
     try:
         job = _queue(request).submit(
             upload_id=payload.upload_id,
@@ -206,6 +230,8 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
             requested_start=payload.start,
             effective_start=effective_start,
             warning=warning,
+            subtitles=payload.subtitles,
+            translate_to=payload.translate_to,
         )
     except QueueFullError as exc:
         raise HTTPException(status_code=429, detail="server busy, try again later") from exc
@@ -277,6 +303,19 @@ async def download_job(request: Request, job_id: str) -> FileResponse:
     return FileResponse(output, media_type="video/mp4", filename="clip.mp4")
 
 
+@router.get("/jobs/{job_id}/subtitles.srt")
+async def download_job_subtitles(request: Request, job_id: str) -> FileResponse:
+    job = _queue(request).get(job_id)
+    if job is None or not job.subtitle_path:
+        raise HTTPException(status_code=404, detail="subtitles not found")
+    path = Path(job.subtitle_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="subtitles not found")
+    return FileResponse(
+        path, media_type="application/x-subrip", filename="subtitles.srt"
+    )
+
+
 @router.get("/resources")
 async def list_resources() -> dict[str, list[dict]]:
     return {"items": resources.list_recent()}
@@ -297,6 +336,18 @@ async def download_resource(resource_id: str) -> FileResponse:
     name = record.get("name") or "clip"
     stem = Path(name).stem[:60] or "clip"
     return FileResponse(path, media_type="video/mp4", filename=f"{stem}.mp4")
+
+
+@router.get("/resources/{resource_id}/subtitles.srt")
+async def download_resource_subtitles(resource_id: str) -> FileResponse:
+    if resources.get(resource_id) is None:
+        raise HTTPException(status_code=404, detail="resource not found")
+    path = resources.subtitle_path(resource_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="subtitles not found")
+    return FileResponse(
+        path, media_type="application/x-subrip", filename="subtitles.srt"
+    )
 
 
 @router.get("/health")

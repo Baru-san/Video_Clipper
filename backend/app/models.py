@@ -10,6 +10,11 @@ class ClipMode(str, Enum):
     reencode = "reencode"
 
 
+class SubtitlesMode(str, Enum):
+    none = "none"
+    srt = "srt"
+
+
 class JobStatus(str, Enum):
     queued = "queued"
     running = "running"
@@ -41,6 +46,8 @@ class ClipRequest(BaseModel):
     end: float = Field(gt=0)
     mode: ClipMode = ClipMode.copy
     scale_height: int | None = Field(default=None, ge=144, le=2160)
+    subtitles: SubtitlesMode = SubtitlesMode.none
+    translate_to: str | None = Field(default=None, max_length=8)
 
 
 class JobOut(BaseModel):
@@ -52,3 +59,7 @@ class JobOut(BaseModel):
     requested_start: float | None = None
     effective_start: float | None = None
     warning: str | None = None
+    phase: str | None = None
+    subtitle_status: str | None = None
+    subtitle_url: str | None = None
+    detected_language: str | None = None

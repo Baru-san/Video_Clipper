@@ -172,6 +172,21 @@ file. Key knobs:
 | `VC_RETENTION_HOURS` | `24` | TTL before cleanup deletes files |
 | `VC_MIN_FREE_BYTES` | `1073741824` (1 GB) | reject uploads below this free disk |
 | `VC_MAX_QUEUE_SIZE` | `20` | max pending jobs (429 beyond) |
+| `VC_STT_MODEL` | `whisper-large-v3-turbo` | Groq speech-to-text model |
+| `VC_TRANSLATE_MODEL` | `deepseek-flash` | DeepSeek translation model |
+| `VC_SUBTITLE_TARGETS` | `en,id` | allowed translation targets |
+
+**Secrets** (Groq + DeepSeek keys) go in `/etc/video-clipper.env`, referenced by the unit
+via `EnvironmentFile=-/etc/video-clipper.env`:
+
+```bash
+printf 'GROQ_API_KEY=...\nDEEPSEEK_API_KEY=...\n' | sudo tee /etc/video-clipper.env
+sudo chmod 600 /etc/video-clipper.env
+sudo systemctl restart video-clipper
+```
+
+Never commit this file; `.gitignore` already blocks `.env*`. Without keys, clips still work
+— only subtitle generation is disabled.
 
 ---
 

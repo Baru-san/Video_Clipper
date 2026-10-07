@@ -96,6 +96,85 @@ def test_resource_listed_and_deleted(sample_video):
         assert client.get(f"/api/uploads/{upload_id}").status_code == 404
 
 
+def test_clip_with_subtitles_and_translation(monkeypatch, sample_video):
+    import app.media.stt as stt
+    import app.media.translate as translate
+    from app.media.subtitles import Segment, Transcript
+
+    monkeypatch.setattr(stt, "is_configured", lambda: True)
+    monkeypatch.setattr(translate, "is_configured", lambda: True)
+
+    async def fake_transcribe(path, language=None):
+        return Transcript("en", [Segment(0.0, 1.0, "hello"), Segment(1.0, 2.0, "world")])
+
+    async def fake_translate(segments, target, source=None):
+        return [Segment(s.start, s.end, f"{target}:{s.text}") for s in segments]
+
+    monkeypatch.setattr(stt, "transcribe", fake_transcribe)
+    monkeypatch.setattr(translate, "translate_segments", fake_translate)
+
+    with TestClient(app) as client:
+        upload = _upload(client, sample_video).json()
+        created = client.post(
+            "/api/clips",
+            json={
+                "upload_id": upload["upload_id"],
+                "start": 0.0,
+                "end": 2.0,
+                "mode": "copy",
+                "subtitles": "srt",
+                "translate_to": "id",
+            },
+        ).json()
+        job = _wait(client, created["id"])
+        assert job["status"] == "done"
+        assert job["subtitle_status"] == "done"
+        assert job["detected_language"] == "en"
+
+        srt = client.get(job["subtitle_url"])
+        assert srt.status_code == 200
+        assert "id:hello" in srt.text
+
+
+def test_subtitles_skip_when_language_matches(monkeypatch, sample_video):
+    import app.media.stt as stt
+    import app.media.translate as translate
+    from app.media.subtitles import Segment, Transcript
+
+    monkeypatch.setattr(stt, "is_configured", lambda: True)
+    monkeypatch.setattr(translate, "is_configured", lambda: True)
+
+    async def fake_transcribe(path, language=None):
+        return Transcript("id", [Segment(0.0, 1.0, "halo dunia")])
+
+    called = {"translate": False}
+
+    async def fake_translate(segments, target, source=None):
+        called["translate"] = True
+        return segments
+
+    monkeypatch.setattr(stt, "transcribe", fake_transcribe)
+    monkeypatch.setattr(translate, "translate_segments", fake_translate)
+
+    with TestClient(app) as client:
+        upload = _upload(client, sample_video).json()
+        created = client.post(
+            "/api/clips",
+            json={
+                "upload_id": upload["upload_id"],
+                "start": 0.0,
+                "end": 2.0,
+                "mode": "copy",
+                "subtitles": "srt",
+                "translate_to": "id",
+            },
+        ).json()
+        job = _wait(client, created["id"])
+        assert job["subtitle_status"] == "done"
+        assert called["translate"] is False
+        assert "halo dunia" in client.get(job["subtitle_url"]).text
+
+
 def test_reencode_clip(sample_video):
     with TestClient(app) as client:
         upload = _upload(client, sample_video).json()
