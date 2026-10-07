@@ -22,6 +22,9 @@ class Job:
     duration: float
     mode: ClipMode
     scale_height: int | None = None
+    requested_start: float = 0.0
+    effective_start: float = 0.0
+    warning: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: JobStatus = JobStatus.queued
     percent: float = 0.0
@@ -40,6 +43,9 @@ class Job:
             percent=round(self.percent, 2),
             error=self.error,
             download_url=download_url,
+            requested_start=self.requested_start,
+            effective_start=self.effective_start,
+            warning=self.warning,
         )
 
 
@@ -81,6 +87,9 @@ class JobQueue:
         duration: float,
         mode: ClipMode,
         scale_height: int | None = None,
+        requested_start: float | None = None,
+        effective_start: float | None = None,
+        warning: str | None = None,
     ) -> Job:
         job = Job(
             upload_id=upload_id,
@@ -90,6 +99,9 @@ class JobQueue:
             duration=duration,
             mode=mode,
             scale_height=scale_height,
+            requested_start=start if requested_start is None else requested_start,
+            effective_start=start if effective_start is None else effective_start,
+            warning=warning,
         )
         self._jobs[job.id] = job
         self._queue.put_nowait(job)

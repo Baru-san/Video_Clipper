@@ -23,6 +23,9 @@ export interface Job {
   percent: number;
   error: string | null;
   download_url: string | null;
+  requested_start: number | null;
+  effective_start: number | null;
+  warning: string | null;
 }
 
 async function asError(response: Response): Promise<never> {

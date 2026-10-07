@@ -154,6 +154,7 @@ export default function App() {
           <p>
             Status: <strong>{job.status}</strong> — {job.percent.toFixed(0)}%
           </p>
+          {job.warning && <p className="warning">{job.warning}</p>}
           <progress value={job.percent} max={100} />
           {job.error && <p className="error">{job.error}</p>}
           {(job.status === "queued" || job.status === "running") && (

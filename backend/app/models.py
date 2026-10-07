@@ -49,3 +49,6 @@ class JobOut(BaseModel):
     percent: float = 0.0
     error: str | None = None
     download_url: str | None = None
+    requested_start: float | None = None
+    effective_start: float | None = None
+    warning: str | None = None

@@ -21,7 +21,9 @@ from app.core.uploads import (
 from app.media import probe as probe_module
 from app.media.command_builder import thumbnail_argv
 from app.media.ffmpeg import FFmpegRunner
-from app.models import ClipRequest, JobOut, MediaInfoOut, UploadOut
+from app.media.keyframes import get_keyframes, snap_to_keyframe
+from app.maintenance.cleanup import has_free_space
+from app.models import ClipMode, ClipRequest, JobOut, MediaInfoOut, UploadOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -35,6 +37,9 @@ def _queue(request: Request) -> JobQueue:
 
 @router.post("/uploads", response_model=UploadOut)
 async def upload_video(request: Request, file: UploadFile = File(...)) -> UploadOut:
+    if not has_free_space():
+        raise HTTPException(status_code=507, detail="insufficient storage")
+
     upload_id, dest = new_upload_path(Path(file.filename or "").suffix)
 
     written = 0
@@ -164,7 +169,23 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
     if payload.end > info.duration + 0.05:
         raise HTTPException(status_code=422, detail="end exceeds video duration")
 
-    duration = payload.end - payload.start
+    effective_start = payload.start
+    warning: str | None = None
+    if payload.mode == ClipMode.copy:
+        try:
+            frames = await get_keyframes(str(source))
+        except Exception:  # noqa: BLE001 - fall back to requested start
+            frames = []
+        snapped = snap_to_keyframe(frames, payload.start) if frames else payload.start
+        if abs(snapped - payload.start) > 0.05:
+            effective_start = snapped
+            warning = (
+                f"Lossless cut starts at the nearest keyframe "
+                f"({snapped:.2f}s instead of {payload.start:.2f}s). "
+                "Use Precise mode for frame-accurate cuts."
+            )
+
+    duration = payload.end - effective_start
     output_id = uuid.uuid4().hex
     output = settings.outputs_dir / f"{output_id}.mp4"
 
@@ -172,10 +193,13 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
         upload_id=payload.upload_id,
         source=str(source),
         output=str(output),
-        start=payload.start,
+        start=effective_start,
         duration=duration,
         mode=payload.mode,
         scale_height=payload.scale_height,
+        requested_start=payload.start,
+        effective_start=effective_start,
+        warning=warning,
     )
     return job.to_out()
 

@@ -82,6 +82,10 @@ button:disabled {
   color: #f87171;
 }
 
+.warning {
+  color: #fbbf24;
+}
+
 .timeline {
   margin-bottom: 8px;
 }
