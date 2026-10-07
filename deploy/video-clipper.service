@@ -9,7 +9,9 @@ Group=videoclip
 WorkingDirectory=/srv/video-clipper/backend
 Environment=VC_DATA_DIR=/srv/video-clipper/data
 Environment=VC_MAX_UPLOAD_BYTES=524288000
+# Keep processed clips for 24h; cleaned by the sweeper every 15 min.
 Environment=VC_RETENTION_HOURS=24
+Environment=VC_CLEANUP_INTERVAL=900
 Environment=VC_MIN_FREE_BYTES=1073741824
 ExecStart=/srv/video-clipper/.venv/bin/uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
 Restart=on-failure

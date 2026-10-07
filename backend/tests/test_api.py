@@ -62,6 +62,40 @@ def test_upload_probe_and_copy_clip(sample_video):
         assert len(download.content) > 0
 
 
+def test_resource_listed_and_deleted(sample_video):
+    with TestClient(app) as client:
+        upload = _upload(client, sample_video).json()
+        upload_id = upload["upload_id"]
+        created = client.post(
+            "/api/clips",
+            json={
+                "upload_id": upload_id,
+                "start": 0.5,
+                "end": 2.0,
+                "mode": "copy",
+            },
+        ).json()
+        job = _wait(client, created["id"])
+        assert job["status"] == "done"
+
+        # Retained for 24h, so it can be downloaded more than once.
+        assert client.get(job["download_url"]).status_code == 200
+        assert client.get(job["download_url"]).status_code == 200
+
+        items = client.get("/api/resources").json()["items"]
+        matches = [item for item in items if item["upload_id"] == upload_id]
+        assert len(matches) == 1
+        resource_id = matches[0]["id"]
+        assert matches[0]["download_url"] == f"/api/resources/{resource_id}/download"
+
+        assert client.get(f"/api/resources/{resource_id}/download").status_code == 200
+
+        assert client.delete(f"/api/resources/{resource_id}").status_code == 204
+        assert client.get(f"/api/resources/{resource_id}/download").status_code == 404
+        # Removing the last clip for an upload also removes the source.
+        assert client.get(f"/api/uploads/{upload_id}").status_code == 404
+
+
 def test_reencode_clip(sample_video):
     with TestClient(app) as client:
         upload = _upload(client, sample_video).json()

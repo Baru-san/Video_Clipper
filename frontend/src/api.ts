@@ -97,6 +97,31 @@ export async function cancelJob(id: string): Promise<void> {
   await fetch(`/api/jobs/${id}`, { method: "DELETE" });
 }
 
+export interface Resource {
+  id: string;
+  upload_id: string;
+  name: string;
+  start: number;
+  end: number;
+  duration: number;
+  mode: string;
+  created: number;
+  size: number;
+  download_url: string;
+  thumbnail_url: string | null;
+}
+
+export async function listResources(): Promise<Resource[]> {
+  const response = await fetch("/api/resources");
+  if (!response.ok) return asError(response);
+  const body = (await response.json()) as { items: Resource[] };
+  return body.items;
+}
+
+export async function deleteResource(id: string): Promise<void> {
+  await fetch(`/api/resources/${id}`, { method: "DELETE" });
+}
+
 export function subscribeJob(
   id: string,
   onUpdate: (job: Job) => void,

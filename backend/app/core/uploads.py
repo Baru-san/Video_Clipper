@@ -30,10 +30,11 @@ def _meta_path(upload_id: str) -> Path:
     return settings.uploads_dir / f"{upload_id}.json"
 
 
-def save_metadata(upload_id: str, path: Path, info: MediaInfo) -> None:
+def save_metadata(upload_id: str, path: Path, info: MediaInfo, name: str = "") -> None:
     payload = {
         "upload_id": upload_id,
         "path": str(path),
+        "name": name,
         "media": {
             "duration": info.duration,
             "width": info.width,
@@ -46,6 +47,19 @@ def save_metadata(upload_id: str, path: Path, info: MediaInfo) -> None:
         },
     }
     _meta_path(upload_id).write_text(json.dumps(payload), encoding="utf-8")
+
+
+def get_upload_name(upload_id: str) -> str:
+    if not is_valid_id(upload_id):
+        return ""
+    meta_path = _meta_path(upload_id)
+    if not meta_path.is_file():
+        return ""
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(data.get("name", "") or "")
 
 
 def resolve_upload(upload_id: str) -> tuple[Path, MediaInfo]:

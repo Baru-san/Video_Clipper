@@ -11,9 +11,11 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.config import settings
+from app.core import resources
 from app.core.queue import JobQueue, QueueFullError
 from app.core.uploads import (
     delete_upload,
+    get_upload_name,
     new_upload_path,
     resolve_upload,
     save_metadata,
@@ -75,7 +77,8 @@ async def upload_video(request: Request, file: UploadFile = File(...)) -> Upload
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=413, detail="video too long")
 
-    save_metadata(upload_id, dest, info)
+    original_name = Path(file.filename or "").name[:200]
+    save_metadata(upload_id, dest, info, name=original_name)
     await _generate_thumbnails(str(dest), upload_id, info.duration)
 
     thumb_urls = [
@@ -188,6 +191,7 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
     duration = payload.end - effective_start
     output_id = uuid.uuid4().hex
     output = settings.outputs_dir / f"{output_id}.mp4"
+    source_name = get_upload_name(payload.upload_id)
 
     try:
         job = _queue(request).submit(
@@ -198,6 +202,7 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
             duration=duration,
             mode=payload.mode,
             scale_height=payload.scale_height,
+            source_name=source_name,
             requested_start=payload.start,
             effective_start=effective_start,
             warning=warning,
@@ -270,6 +275,28 @@ async def download_job(request: Request, job_id: str) -> FileResponse:
     if not output.is_file():
         raise HTTPException(status_code=404, detail="output missing")
     return FileResponse(output, media_type="video/mp4", filename="clip.mp4")
+
+
+@router.get("/resources")
+async def list_resources() -> dict[str, list[dict]]:
+    return {"items": resources.list_recent()}
+
+
+@router.delete("/resources/{resource_id}", status_code=204)
+async def delete_resource(resource_id: str) -> None:
+    if not resources.delete(resource_id):
+        raise HTTPException(status_code=404, detail="resource not found")
+
+
+@router.get("/resources/{resource_id}/download")
+async def download_resource(resource_id: str) -> FileResponse:
+    record = resources.get(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="resource not found")
+    path = resources.file_path(resource_id)
+    name = record.get("name") or "clip"
+    stem = Path(name).stem[:60] or "clip"
+    return FileResponse(path, media_type="video/mp4", filename=f"{stem}.mp4")
 
 
 @router.get("/health")

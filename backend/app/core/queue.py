@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import settings
+from app.core import resources
 from app.media.ffmpeg import FFmpegError, FFmpegRunner, Progress, cancel_process
 from app.media.command_builder import copy_cut_argv, reencode_cut_argv
 from app.models import ClipMode, JobOut, JobStatus
@@ -28,6 +29,7 @@ class Job:
     duration: float
     mode: ClipMode
     scale_height: int | None = None
+    source_name: str = ""
     requested_start: float = 0.0
     effective_start: float = 0.0
     warning: str | None = None
@@ -94,6 +96,7 @@ class JobQueue:
         duration: float,
         mode: ClipMode,
         scale_height: int | None = None,
+        source_name: str = "",
         requested_start: float | None = None,
         effective_start: float | None = None,
         warning: str | None = None,
@@ -108,6 +111,7 @@ class JobQueue:
             duration=duration,
             mode=mode,
             scale_height=scale_height,
+            source_name=source_name,
             requested_start=start if requested_start is None else requested_start,
             effective_start=start if effective_start is None else effective_start,
             warning=warning,
@@ -180,6 +184,24 @@ class JobQueue:
             except asyncio.QueueFull:
                 pass
 
+    def _record_resource(self, job: Job) -> None:
+        resource_id = Path(job.output).stem
+        try:
+            resources.save(
+                {
+                    "id": resource_id,
+                    "upload_id": job.upload_id,
+                    "name": job.source_name,
+                    "start": job.effective_start,
+                    "end": job.effective_start + job.duration,
+                    "duration": job.duration,
+                    "mode": job.mode.value,
+                    "created": job.created_at.timestamp(),
+                }
+            )
+        except OSError:
+            logger.warning("failed to record resource for job %s", job.id, exc_info=True)
+
     async def _run_worker(self) -> None:
         while True:
             job = await self._queue.get()
@@ -243,6 +265,7 @@ class JobQueue:
             else:
                 job.status = JobStatus.done
                 job.percent = 100.0
+                self._record_resource(job)
         finally:
             job.proc = None
             job.finished_at = datetime.now(timezone.utc)
