@@ -78,7 +78,8 @@ You get a temporary `https://<random>.trycloudflare.com` URL. The URL **changes 
    sudo systemctl enable --now cloudflared
    ```
 4. In the tunnel's **Public Hostname** settings, map your hostname to service
-   `http://localhost:80`.
+   `http://localhost:80`. (Nginx also listens on `8080`, which is the Cloudflare UI's
+   default service URL, so either port works.)
 5. Done — `https://your-domain/` serves the app with Cloudflare TLS, no open ports.
 
 Verify from anywhere:
