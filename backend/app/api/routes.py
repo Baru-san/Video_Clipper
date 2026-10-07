@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.config import settings
-from app.core.queue import JobQueue
+from app.core.queue import JobQueue, QueueFullError
 from app.core.uploads import (
     delete_upload,
     new_upload_path,
@@ -189,19 +189,32 @@ async def create_clip(request: Request, payload: ClipRequest) -> JobOut:
     output_id = uuid.uuid4().hex
     output = settings.outputs_dir / f"{output_id}.mp4"
 
-    job = _queue(request).submit(
-        upload_id=payload.upload_id,
-        source=str(source),
-        output=str(output),
-        start=effective_start,
-        duration=duration,
-        mode=payload.mode,
-        scale_height=payload.scale_height,
-        requested_start=payload.start,
-        effective_start=effective_start,
-        warning=warning,
-    )
+    try:
+        job = _queue(request).submit(
+            upload_id=payload.upload_id,
+            source=str(source),
+            output=str(output),
+            start=effective_start,
+            duration=duration,
+            mode=payload.mode,
+            scale_height=payload.scale_height,
+            requested_start=payload.start,
+            effective_start=effective_start,
+            warning=warning,
+        )
+    except QueueFullError as exc:
+        raise HTTPException(status_code=429, detail="server busy, try again later") from exc
     return job.to_out()
+
+
+@router.get("/uploads/{upload_id}/keyframes")
+async def upload_keyframes(upload_id: str) -> dict[str, list[float]]:
+    try:
+        source, _ = resolve_upload(upload_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="upload not found") from exc
+    frames = await get_keyframes(str(source))
+    return {"keyframes": [round(f, 3) for f in frames]}
 
 
 @router.delete("/jobs/{job_id}", status_code=202)

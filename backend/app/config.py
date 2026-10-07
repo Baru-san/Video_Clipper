@@ -42,6 +42,9 @@ class Settings:
     cleanup_interval_seconds: int = field(
         default_factory=lambda: _env_int("VC_CLEANUP_INTERVAL", 3600)
     )
+    max_queue_size: int = field(
+        default_factory=lambda: _env_int("VC_MAX_QUEUE_SIZE", 20)
+    )
 
     @property
     def uploads_dir(self) -> Path:

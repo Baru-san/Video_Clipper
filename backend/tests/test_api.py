@@ -39,6 +39,10 @@ def test_upload_probe_and_copy_clip(sample_video):
         thumb = client.get(upload["thumbnail_urls"][0])
         assert thumb.status_code == 200
 
+        keyframes = client.get(f"/api/uploads/{upload['upload_id']}/keyframes")
+        assert keyframes.status_code == 200
+        assert len(keyframes.json()["keyframes"]) >= 1
+
         created = client.post(
             "/api/clips",
             json={

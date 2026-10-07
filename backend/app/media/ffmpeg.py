@@ -125,3 +125,23 @@ async def cancel_process(proc: asyncio.subprocess.Process) -> None:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
+
+
+async def verify_tools() -> dict[str, str]:
+    """Fail fast at startup if ffmpeg/ffprobe are missing; return version lines."""
+    versions: dict[str, str] = {}
+    for name, path in (("ffmpeg", settings.ffmpeg_path), ("ffprobe", settings.ffprobe_path)):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                path,
+                "-version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"{name} not found at {path!r}") from exc
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"{name} is not runnable at {path!r}")
+        versions[name] = stdout.decode("utf-8", "replace").splitlines()[0]
+    return versions

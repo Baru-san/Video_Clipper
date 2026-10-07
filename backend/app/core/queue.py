@@ -5,12 +5,18 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
+from app.config import settings
 from app.media.ffmpeg import FFmpegError, FFmpegRunner, Progress, cancel_process
 from app.media.command_builder import copy_cut_argv, reencode_cut_argv
 from app.models import ClipMode, JobOut, JobStatus
 
 logger = logging.getLogger(__name__)
+
+
+class QueueFullError(RuntimeError):
+    pass
 
 
 @dataclass
@@ -52,8 +58,9 @@ class Job:
 class JobQueue:
     """Single-worker queue: exactly one FFmpeg job runs at a time."""
 
-    def __init__(self, runner: FFmpegRunner | None = None) -> None:
+    def __init__(self, runner: FFmpegRunner | None = None, max_size: int | None = None) -> None:
         self._runner = runner or FFmpegRunner()
+        self._max_size = max_size if max_size is not None else settings.max_queue_size
         self._jobs: dict[str, Job] = {}
         self._queue: asyncio.Queue[Job] = asyncio.Queue()
         self._worker: asyncio.Task | None = None
@@ -91,6 +98,8 @@ class JobQueue:
         effective_start: float | None = None,
         warning: str | None = None,
     ) -> Job:
+        if self.active_count() >= self._max_size:
+            raise QueueFullError("too many pending jobs")
         job = Job(
             upload_id=upload_id,
             source=source,
@@ -106,6 +115,36 @@ class JobQueue:
         self._jobs[job.id] = job
         self._queue.put_nowait(job)
         return job
+
+    def active_count(self) -> int:
+        return sum(
+            1
+            for job in self._jobs.values()
+            if job.status in (JobStatus.queued, JobStatus.running)
+        )
+
+    def active_paths(self) -> set:
+        """Files that must not be swept while their job is queued or running."""
+        paths = set()
+        for job in self._jobs.values():
+            if job.status in (JobStatus.queued, JobStatus.running):
+                paths.add(Path(job.source).resolve())
+                paths.add(Path(job.output).resolve())
+        return paths
+
+    def prune(self, keep_seconds: int = 3600) -> int:
+        """Drop finished job records older than `keep_seconds` to bound memory."""
+        cutoff = datetime.now(timezone.utc).timestamp() - keep_seconds
+        stale = [
+            job_id
+            for job_id, job in self._jobs.items()
+            if job.finished_at is not None
+            and job.finished_at.timestamp() < cutoff
+            and not job.subscribers
+        ]
+        for job_id in stale:
+            del self._jobs[job_id]
+        return len(stale)
 
     def subscribe(self, job_id: str) -> asyncio.Queue | None:
         job = self._jobs.get(job_id)

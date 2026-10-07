@@ -12,6 +12,7 @@ from app.api.routes import router
 from app.config import settings
 from app.core.queue import JobQueue
 from app.maintenance.cleanup import cleanup_loop
+from app.media.ffmpeg import verify_tools
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,11 +26,15 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
+    versions = await verify_tools()
+    for tool, version in versions.items():
+        logger.info("%s: %s", tool, version)
+
     queue = JobQueue()
     await queue.start()
     app.state.queue = queue
 
-    cleanup_task = asyncio.create_task(cleanup_loop(), name="cleanup")
+    cleanup_task = asyncio.create_task(cleanup_loop(queue=queue), name="cleanup")
     try:
         yield
     finally:

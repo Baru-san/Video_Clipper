@@ -25,9 +25,9 @@ def _sweep_dir(directory: Path, cutoff: float, keep: set[Path]) -> int:
     if not directory.is_dir():
         return 0
     for entry in directory.iterdir():
-        if entry in keep:
-            continue
         try:
+            if entry.resolve() in keep:
+                continue
             if entry.stat().st_mtime >= cutoff:
                 continue
             if entry.is_dir():
@@ -53,10 +53,14 @@ def sweep(active_paths: set[Path] | None = None) -> int:
     return removed
 
 
-async def cleanup_loop(cfg: Settings = settings) -> None:
+async def cleanup_loop(cfg: Settings = settings, queue=None) -> None:
     while True:
         await asyncio.sleep(cfg.cleanup_interval_seconds)
         try:
-            await asyncio.to_thread(sweep)
+            active = queue.active_paths() if queue is not None else set()
+            removed = await asyncio.to_thread(sweep, active)
+            if queue is not None:
+                queue.prune()
+            logger.debug("cleanup removed %d entries", removed)
         except Exception:  # noqa: BLE001
             logger.exception("cleanup sweep failed")
