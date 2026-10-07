@@ -1,9 +1,12 @@
 # Video Clipper — Technical Guide
 
 A mentor's field guide to the concepts, pitfalls, and engineering decisions you must
-understand before and while building a desktop video clipper app.
+understand before and while building this video clipper.
 
-Stack assumption: **Python 3.11+ · PySide6 (Qt) · FFmpeg · PyInstaller**.
+Stack: **React + TypeScript + Vite · FastAPI (Python) · FFmpeg · Nginx · systemd · Debian VPS**.
+
+Target production server: **1 vCPU · 1 GB RAM · 15 GB SSD**. Every design decision below is
+filtered through that constraint.
 
 ---
 
@@ -11,9 +14,9 @@ Stack assumption: **Python 3.11+ · PySide6 (Qt) · FFmpeg · PyInstaller**.
 
 > **Your app is an orchestrator. FFmpeg is the engine.**
 
-The quality of your product depends far more on how correctly you *drive FFmpeg* and
-*manage long-running processes* than on any algorithmic cleverness in Python. Everything
-below serves that truth.
+The quality of your product depends far more on how correctly you *drive FFmpeg*, *stream
+large files without loading them into RAM*, and *manage a long-running process on a tiny
+server* than on any cleverness in Python or React. Everything below serves that truth.
 
 ---
 
@@ -28,7 +31,7 @@ terms cold.
 - **Codec** (H.264, H.265/HEVC, VP9, AV1, AAC, Opus): how the actual frames/samples are
   compressed.
 - Consequence: you can change the container without touching the codec (`-c copy`) — fast.
-  You cannot change the codec without re-encoding — slow.
+  You cannot change the codec without re-encoding — slow and CPU-heavy.
 
 ### 1.2 Keyframes (I-frames) — the #1 gotcha
 - Video is compressed as groups of frames (GOPs). Only **keyframes** can start playback.
@@ -36,7 +39,7 @@ terms cold.
   the nearest keyframe is at 00:02.500, a stream-copy cut will be off, or start early.
 - This is the single biggest source of "why is my clip wrong?" bugs.
 - Two solutions (see §3.3): re-encode the cut for frame accuracy, or accept
-  keyframe-snapped cuts.
+  keyframe-snapped cuts. **On a 1 vCPU box, prefer keyframe-snapped cuts by default.**
 
 ### 1.3 Frame rate, timebase, PTS/DTS
 - **PTS (Presentation Timestamp):** when a frame should be shown.
@@ -54,41 +57,47 @@ terms cold.
 ### 1.5 Color & HDR
 - `yuv420p` is the universally compatible pixel format for output; HDR (`bt2020`,
   `smpte2084`) sources need explicit tonemapping or they look washed out after re-encode.
-- Always pass `-pix_fmt yuv420p` for maximum player compatibility.
+- Always pass `-pix_fmt yuv420p` when re-encoding for browser compatibility.
 
-**Action items for you:**
+**Action items:**
 - [ ] Learn to read `ffprobe -v quiet -print_format json -show_streams -show_format file.mp4`.
 - [ ] Build a helper that extracts: duration, fps, codec, resolution, keyframe interval,
       VFR/CFR, audio layout, HDR flag.
-- [ ] Never assume user input is CFR H.264 MP4.
+- [ ] Never trust file extension or client-supplied MIME type; probe the actual file.
 
 ---
 
 ## 2. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────┐
-│                 UI Layer (PySide6)           │
-│  Main window · Timeline · Preview · Queue    │
-└───────────────┬─────────────────────────────┘
-                │ signals/slots (thread-safe)
-┌───────────────▼─────────────────────────────┐
-│            Application Core                  │
-│  Project model · Command builder · Queue     │
-└───────────────┬─────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│            Browser (React + Vite)             │
+│  Upload · Timeline · In/Out · Progress · DL   │
+└───────────────┬───────────────────────────────┘
+                │ HTTP / SSE
+┌───────────────▼───────────────────────────────┐
+│                    Nginx                        │
+│  static build · reverse proxy · body-size cap   │
+└───────────────┬───────────────────────────────┘
                 │
-┌───────────────▼─────────────────────────────┐
-│         Media Engine (FFmpeg adapter)        │
-│  probe() · build_command() · run() · parse() │
-└───────────────┬─────────────────────────────┘
-                │ subprocess
-┌───────────────▼─────────────────────────────┐
-│                ffmpeg / ffprobe              │
-└─────────────────────────────────────────────┘
+┌───────────────▼───────────────────────────────┐
+│              FastAPI (uvicorn, 1 worker)        │
+│  routes · validation · job queue · SSE progress │
+└───────────────┬───────────────────────────────┘
+                │
+┌───────────────▼───────────────────────────────┐
+│            Media Engine (FFmpeg adapter)        │
+│  probe() · build_argv() · run() · parse()       │
+└───────────────┬───────────────────────────────┘
+                │ subprocess (NO shell=True)
+┌───────────────▼───────────────────────────────┐
+│                ffmpeg / ffprobe                  │
+└──────────────────────────────────────────────────┘
 ```
 
-**Layering rule:** UI never calls `subprocess` directly. UI ↔ Core ↔ Engine. This keeps the
-engine testable headlessly and lets you swap the UI (or even add a CLI) later.
+**Layering rule:** API routes never build FFmpeg commands or call `subprocess` directly.
+Routes ↔ Core (queue/validation) ↔ Media engine. This keeps the engine testable without a
+running server and prevents the API layer from leaking media details.
 
 ---
 
@@ -96,43 +105,46 @@ engine testable headlessly and lets you swap the UI (or even add a CLI) later.
 
 ### 3.1 The two ways to cut
 
-**Lossless / stream copy (fast):**
+**Lossless / stream copy (fast — DEFAULT):**
 ```bash
-ffmpeg -ss 00:00:10 -to 00:00:20 -i input.mp4 -c copy -avoid_negative_ts make_zero output.mp4
+ffmpeg -ss 00:00:10 -i input.mp4 -t 00:00:10 -c copy \
+  -avoid_negative_ts make_zero \
+  -movflags +faststart output.mp4
 ```
-- Near-instant, no quality loss.
+- Near-instant, no quality loss, minimal CPU — matters enormously on 1 vCPU.
 - **Keyframe-snapped** start (may be off by up to one GOP).
-- Put `-ss` **before** `-i` for fast input seeking, but this is less accurate. Put `-ss`
-  **after** `-i` for accurate-but-slower decode. Choose deliberately.
+- `-ss` before `-i` = fast input seek (less accurate). `-ss` after `-i` = accurate but
+  decodes from the start (slower). Default to before-`-i` for copy.
 
-**Accurate re-encode (slow):**
+**Accurate re-encode (slow — opt-in only):**
 ```bash
-ffmpeg -ss 00:00:10 -i input.mp4 -t 10 \
-  -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
-  -c:a aac -b:a 192k -movflags +faststart output.mp4
+ffmpeg -ss 00:00:10 -i input.mp4 -t 00:00:10 \
+  -c:v libx264 -threads 1 -preset veryfast -crf 20 -pix_fmt yuv420p \
+  -c:a aac -b:a 128k -movflags +faststart output.mp4
 ```
 - Frame-accurate, but costs CPU time and a generation of quality loss.
-- Use `CRF` (constant quality) not bitrate unless you have a reason.
+- On 1 vCPU, `-threads 1` and `-preset veryfast`/`ultrafast` keep it from thrashing.
 
-**Product decision:** offer both. Default to lossless; give a "precise cut" toggle that
-re-encodes only the affected clips (smart render), not the whole timeline.
+**Product decision:** default to lossless. Offer a "precise cut" toggle that re-encodes,
+with a clear warning that it is slower and heavier.
 
 ### 3.2 Concatenation
-- Same codec/params → concat demuxer with `file 'clip1.mp4'` list, `-c copy` (fast).
-- Different sources → must re-encode, or use the concat **filter**.
+- Same codec/params → concat demuxer with a `file 'clip1.mp4'` list, `-c copy` (fast).
+- Different sources → must re-encode, or use the concat **filter** (CPU-heavy).
 - Mismatched timebases are the classic cause of A/V drift. Probe before merging.
 
-### 3.3 Fast/keyframe-aware seeking strategy
+### 3.3 Keyframe-aware seeking strategy
 1. Probe source, get keyframe list (`ffprobe -select_streams v -show_frames -skip_frame nokey`).
 2. Find the nearest keyframe ≤ requested start.
-3. Stream-copy from that keyframe, then trim precisely with a filter if needed — or
-   re-encode just that boundary segment and concat. ("Smart render.")
+3. Stream-copy from that keyframe; warn the user if the cut snapped by more than a threshold.
+4. Re-encode only the boundary frames if strict accuracy is required (future "smart render").
 
 ### 3.4 Progress reporting
-- FFmpeg writes progress to stderr. Parse lines like `frame= 154 fps= 45 time=00:00:06.4`.
-- Better: use `-progress pipe:1 -nostats` which emits machine-readable `key=value` lines.
-- Compute `% = current_time / total_duration` (you got total from ffprobe).
-- Don't over-poll: update UI ~10x/sec max.
+- Use `-progress pipe:1 -nostats` — emits machine-readable `key=value` lines on stdout
+  (`frame=`, `out_time_ms=`, `speed=`, `progress=continue|end`).
+- Compute `% = out_time / clip_duration` (duration from ffprobe).
+- Keep stderr separate and capture it for error diagnostics.
+- Throttle UI updates to ~2–10/sec; don't flood SSE.
 
 ### 3.5 Audio/video desync prevention
 - Add `-avoid_negative_ts make_zero` on copy cuts.
@@ -140,156 +152,251 @@ re-encodes only the affected clips (smart render), not the whole timeline.
 
 **Action items:**
 - [ ] Wrap all FFmpeg calls behind a single `FFmpegRunner` class.
-- [ ] Unit-test command construction with table-driven tests (input → expected argv).
-- [ ] Never string-concatenate shell commands; pass argument lists to avoid injection and
-      path-with-spaces bugs.
+- [ ] Unit-test argv construction with table-driven tests (input → expected list).
+- [ ] **Never** use `shell=True`; pass argument lists to avoid injection and spaces bugs.
 
 ---
 
-## 4. GUI Layer (PySide6)
+## 4. Backend (FastAPI)
 
-### 4.1 Signals & Slots
-- Qt's communication primitive. Worker threads emit signals; UI slots update widgets.
-- Understand `Qt.QueuedConnection` (cross-thread, thread-safe) vs `DirectConnection`.
+### 4.1 Process model
+- Run **uvicorn with a single worker** (`--workers 1`) on 1 vCPU. Multiple workers multiply
+  memory and compete for the one core.
+- Use **async** routes for I/O (uploads, status), but run FFmpeg as a subprocess via
+  `asyncio.create_subprocess_exec` (not blocking `subprocess.run`).
 
-### 4.2 The threading model (critical)
-- **Never run FFmpeg on the GUI thread.** It will freeze the UI.
-- Options:
-  - `QProcess` — Qt-native subprocess; integrates with the event loop, emits
-    `readyReadStandardOutput`, `finished`. **Recommended** for FFmpeg.
-  - `QThread` + `worker` object for non-FFmpeg background work.
-  - `QThreadPool` + `QRunnable` for short tasks.
-- Rule: create/update widgets **only on the GUI thread**. Marshal everything via signals.
+### 4.2 The job queue (no Redis, no Celery — per project rules)
+- An **in-process single-worker queue** implemented with `asyncio.Queue` is sufficient.
+- Constraint: **only one FFmpeg job runs at a time** (skill rule + 1 vCPU reality).
+- Job states: `QUEUED → RUNNING → DONE | FAILED | CANCELLED`, plus progress (0–100).
+- Jobs are lost on restart — acceptable for this scope; persist minimal job metadata to the
+  DB/filesystem if users need history later.
 
-### 4.3 The video preview problem (harder than it looks)
-- **Do not** try to write a video player from scratch. Options:
-  1. Embed a real player via `QMediaPlayer` + `QVideoWidget` (uses OS codecs; format
-     support varies, H.265 may fail).
-  2. Decode frames with FFmpeg and render to a `QLabel`/`QGraphicsView` (full control,
-     works with any codec, more code).
-  3. Use `python-mpv` (libmpv) embedded — robust, but adds a native dependency.
-- For a *clipper*, you mostly need **frame-accurate scrubbing + thumbnails**, not smooth
-  playback. Prefer an FFmpeg frame-decode approach for correctness.
-- **Thumbnail strips:** generate with
-  `ffmpeg -i in.mp4 -vf "fps=1/5,scale=160:-1,tile=10x1" -frames:v 1 _%02d.jpg`
-  or `select` filters, and cache them.
+### 4.3 Uploads (memory-safe is non-negotiable)
+- **Stream request bodies to disk in chunks**; never `await file.read()` the whole file into
+  RAM. A 500 MB upload must not become 500 MB of resident memory.
+- Enforce limits **before and during** streaming:
+  - `Content-Length` / `client_max_body_size` at Nginx.
+  - max file size at the app level (abort the stream if exceeded).
+- Generate **random filenames** (e.g. `uuid4().hex`), never trust the client filename.
+- Store under a dedicated data dir; keep original name only as DB metadata (escaped).
 
-### 4.4 Timeline widget
-- Custom `QWidget` with `paintEvent`, or `QGraphicsScene`. You'll need: playhead, in/out
-  handles, zoom, scroll, waveform, keyframe markers.
-- Keep the model (`Project`) separate from the view; the widget renders model state.
+### 4.4 Validation
+- Validate by **probing with ffprobe**, not by extension or client MIME type.
+- Reject: no video stream, duration out of range, timestamps out of range, negative/invalid
+  in/out points, in ≥ out.
+- Clamp/validate all numeric inputs; treat every client value as hostile.
 
-### 4.5 Dialogs, drag-and-drop, shortcuts
-- Support drag-and-drop file open (`dragEnterEvent`/`dropEvent`).
-- Provide keyboard shortcuts (space = play, I/O = set in/out).
-- Remember last-used directory via `QSettings`.
+### 4.5 Progress transport
+- **SSE** (`text/event-stream`) is the simplest fit: one-way server→client, works over plain
+  HTTP, no extra protocol. Use WebSockets only if you later need bidirectional control.
+- Each job exposes `GET /jobs/{id}/events` streaming status/progress, and
+  `GET /jobs/{id}/download` for the result.
+
+### 4.6 API shape (sketch)
+```
+POST /api/uploads            # stream file to disk, return {upload_id, metadata}
+GET  /api/uploads/{id}       # probe metadata (duration, fps, keyframes, thumbs)
+POST /api/clips              # {upload_id, start, end, mode} -> {job_id}
+GET  /api/jobs/{id}          # current status snapshot
+GET  /api/jobs/{id}/events   # SSE progress stream
+GET  /api/jobs/{id}/download # result file (with cleanup TTL)
+DELETE /api/jobs/{id}        # cancel + cleanup
+```
 
 **Action items:**
-- [ ] Prototype a bare window with a QProcess-driven FFmpeg trim and a progress bar first.
-- [ ] Prove UI stays responsive during a 10-minute re-encode.
+- [ ] Endpoint that streams an upload to disk with a hard size cap.
+- [ ] Pydantic models for every request; reject unknown/invalid fields.
+- [ ] Job queue with cancellation that sends `q` to FFmpeg stdin, then kills on timeout.
 
 ---
 
-## 5. Concurrency & Job Queue
+## 5. Frontend (React + TypeScript + Vite)
 
-- Model rendering as a **queue of jobs**, each with state:
-  `PENDING → RUNNING → DONE / FAILED / CANCELLED`.
-- Run N jobs concurrently (N ≈ CPU cores for re-encodes; 1–2 for `-c copy` since it's I/O).
-- **Cancellation:** FFmpeg doesn't always stop on SIGTERM cleanly; send `q` to stdin or
-  terminate, then `kill` after a timeout. Clean up partial output files.
-- **Resource limits:** re-encoding is CPU/RAM-heavy. Cap concurrency; expose it as a setting.
-- Consider `-threads` to control FFmpeg's internal parallelism so it doesn't starve the UI.
+### 5.1 Scope
+- Upload with progress (XHR/`fetch` with upload progress, or tus if resumable needed later).
+- Timeline with in/out handles; scrub via **thumbnail strip**, not full playback.
+- Job progress via `EventSource` (SSE); download link when done.
+- No heavy media libraries; keep the bundle small and the page fast to load.
+
+### 5.2 Thumbnails
+- Generate server-side once per upload:
+  `ffmpeg -i in.mp4 -vf "fps=1/N,scale=160:-1" -frames:v M thumb_%03d.jpg`
+  (choose N so M is ~10–30 thumbs).
+- Cache them; serve statically through Nginx. Do **not** decode video in the browser.
+- Timeline is a `<canvas>` or a row of images with CSS-positioned handles.
+
+### 5.3 Preview
+- For a clipper, frame-accurate scrubbing + thumbnails beats smooth playback.
+- Optional: a `<video>` element streaming the *source* file for rough previewing; browser
+  codec support varies (H.265 often unsupported), so don't rely on it for correctness.
+
+### 5.4 State & UX
+- Keep the in/out state simple; validate on the client *and* server.
+- Show clear "cut will snap to keyframe" messaging and estimated output size.
+- Handle failure states: upload too large, unsupported codec, job failed (offer logs).
+
+### 5.5 Build & delivery
+- `vite build` → static assets served by Nginx. Dev: Vite dev server proxy to FastAPI.
+- Never ship source maps or debug bundles to production unless intended.
 
 ---
 
-## 6. Project & State Management
+## 6. Storage & Disk (15 GB budget)
 
-- Define a serializable **Project** model (JSON): source paths, clips (in/out, effects),
-  output settings, version.
-- **Autosave** and crash recovery. Long edits must survive a crash.
-- Version your project schema; write migrations early.
-- Never store absolute paths only — handle moved/renamed source files gracefully.
-- Undo/redo: use the **command pattern**, or Qt's `QUndoStack`. Retrofitting undo is painful.
+- **Disk is your scarcest durable resource.** Uploads + outputs + thumbnails all compete for
+  15 GB.
+- Layout:
+  ```
+  /srv/video-clipper/
+    data/uploads/<uuid>.<ext>
+    data/outputs/<uuid>.mp4
+    data/thumbs/<uuid>/
+    data/tmp/
+  ```
+- **Lifecycle policy:** TTL-delete uploads/outputs/thumbs after N hours/days via a periodic
+  sweeper task (and/or systemd timer). Do not let orphans accumulate.
+- Enforce a **global quota**: reject new uploads when free disk is below a threshold
+  (check `shutil.disk_usage`), rather than failing mid-encode.
+- Delete temp/partial files in `finally` — cancelled jobs leave garbage otherwise.
+- Never store user media in the git repo or on tmpfs if RAM is tight.
 
 ---
 
-## 7. Performance Considerations
+## 7. Memory & CPU (1 GB / 1 vCPU)
 
 | Concern | Guidance |
 |---|---|
-| Trimming | Prefer `-c copy`; it's ~100x faster than re-encode |
-| Re-encoding | Use hardware encoders when available (`h264_nvenc`, `h264_videotoolbox`, `h264_qsv`) |
-| Preview | Decode at low resolution for scrubbing (`scale=480:-1`) |
-| Thumbnails | Generate once, cache to disk keyed by (file mtime, size, ts) |
-| Memory | Stream FFmpeg output; never read whole files into RAM |
-| Disk | Estimate output size before running (`ffprobe` bitrate × duration) |
-| Startup | Lazy-import heavy modules; defer loading Qt modules not needed at launch |
+| Upload handling | **Stream to disk**; never buffer whole file in RAM |
+| Trim | Prefer `-c copy`; ~0 CPU, minimal memory |
+| Re-encode | `-threads 1`, `-preset veryfast`/`ultrafast`; one job at a time |
+| Concurrency | API-enforced single job; no parallel FFmpeg |
+| Python process | uvicorn `--workers 1`; measure RSS |
+| React | static files, no SSR; small bundle |
+| Nginx | serve statics + proxy; keep buffers sane |
+| Thumbnails | generate at small scale; cache to disk |
+| Database | SQLite (file-based) if needed — no separate DB server |
 
-- **Hardware acceleration:** detect capability at startup, fall back to libx264/libx265.
-- **Bottleneck order is usually:** disk I/O → CPU encode → GPU encode. Profile before
-  optimizing.
-
----
-
-## 8. Packaging & Distribution
-
-- **PyInstaller** (one-file or one-dir). One-dir starts faster and is easier to debug.
-- **You must bundle FFmpeg binaries** — users won't have them. Ship platform builds
-  (`ffmpeg.exe`, `ffmpeg` for macOS/Linux) and resolve the path at runtime via
-  `sys._MEIPASS` when frozen.
-- **Code signing / notarization:** unsigned macOS apps are blocked; Windows SmartScreen
-  warns. Budget for this.
-- **Size:** FFmpeg binaries add ~30–70MB. Accept it, or offer a trimmed build.
-- **Auto-update:** decide early (e.g. `python-updater`/Sparkle-style). Hard to bolt on later.
-- Keep FFmpeg **LGPL/GPL** licensing in mind: if you build with GPL components, your
-  distribution obligations change. (See §11.)
+- Add **cgroup memory limits** in the systemd unit (`MemoryMax=700M`) so a runaway FFmpeg
+  gets throttled/killed instead of taking down the box.
+- Watch FFmpeg's memory with high-resolution 4K re-encodes — they can spike. Prefer copy or
+  downscale (`-vf scale=-2:720`) to bound memory and time.
+- Monitor with `ps_mem`/`systemd-cgtop`; log RSS periodically if needed.
 
 ---
 
-## 9. Testing Strategy
+## 8. Deployment (Debian + Nginx + systemd)
 
-- **Command builder:** pure functions → table-driven unit tests. Highest ROI.
-- **FFmpeg integration:** use tiny sample media checked into `tests/fixtures/` (a 2-second
-  clip). Assert output duration/streams via `ffprobe`.
-- **Engine:** test probe output parsing against captured JSON fixtures.
-- **UI:** `pytest-qt` for widget/signal tests; don't over-invest in UI tests.
-- **E2E smoke:** script that opens a file, cuts, and verifies the output exists and is valid.
-- **Golden files:** compare `ffprobe` JSON of output to expected, with tolerances.
+### 8.1 systemd unit (sketch)
+```ini
+[Unit]
+Description=Video Clipper API
+After=network.target
+
+[Service]
+User=videoclip
+WorkingDirectory=/srv/video-clipper
+ExecStart=/srv/video-clipper/.venv/bin/uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
+Restart=on-failure
+MemoryMax=700M
+Nice=5
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/video-clipper/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 8.2 Nginx (sketch)
+```nginx
+server {
+    listen 80;
+    server_name example.com;
+
+    client_max_body_size 500m;          # align with app limit
+    proxy_read_timeout 3600s;           # long encodes
+    proxy_buffering off;                # required for SSE
+
+    root /srv/video-clipper/frontend/dist;
+    location / { try_files $uri /index.html; }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /media/ { alias /srv/video-clipper/data/; internal; }
+}
+```
+
+- `proxy_buffering off` is **required** for SSE to stream in real time.
+- Set `client_max_body_size` consistent with the app's cap.
+- Serve uploads/outputs with `internal;` and hand out signed/one-time URLs if you don't want
+  direct access — otherwise anyone with a UUID could fetch a file.
+
+### 8.3 Ops
+- Reverse proxy + HTTPS via certbot/Let's Encrypt.
+- Log rotation for app + Nginx logs (beware filling the 15 GB disk with logs).
+- A disk-space and service-health check (simple cron + alert).
 
 ---
 
-## 10. Error Handling & Observability
+## 9. Security (server handles untrusted media — take this seriously)
 
-- FFmpeg errors are opaque. Capture **full stderr** to a log file; surface a friendly
-  message in the UI with an "open log" button.
-- Categorize failures: missing file, unsupported codec, disk full, permission denied,
-  cancelled, timeout.
-- **Logging:** `logging` module, rotating file handler, log level configurable. Include the
-  exact FFmpeg command (redacted of nothing — commands are safe) for reproducibility.
-- Add a crash reporter or at least a "copy diagnostics" action.
+- **Never `shell=True`**; always pass an argv list to ffmpeg/ffprobe.
+- **Randomize filenames**; never interpolate client filenames into paths or commands.
+- **Validate by probing**, not by extension/MIME.
+- **Bound everything:** file size, duration, in/out range, number of jobs, request rate.
+- **Path safety:** resolve and confine all paths to the data dir; reject traversal.
+- **Resource protection:** single job at a time, memory cgroup, request timeouts.
+- **SSRF/URL fetching:** if you ever accept URLs, this becomes a whole new threat surface —
+  restrict or avoid.
+- **Secrets:** keep them in env/systemd, never in the repo (see `.gitignore`).
+- **Cleanup:** TTL deletion prevents disk exhaustion by malicious uploaders (also disk-fill
+  DoS). Enforce quota checks.
 
 ---
 
-## 11. Legal & Licensing (do not ignore)
+## 10. Testing Strategy
+
+- **Argv builder:** pure functions → table-driven unit tests. Highest ROI.
+- **API:** `TestClient`/`httpx` against FastAPI routes; test validation and rejection paths.
+- **Upload:** test size-cap and streaming behavior with generated files.
+- **Media integration:** tiny fixtures (a 2-second clip) in `tests/fixtures/` (whitelisted in
+  `.gitignore`). Assert output duration/streams via `ffprobe`.
+- **Queue:** test single-job serialization, cancellation, and cleanup.
+- **Frontend:** focused component tests (Vitest); don't over-invest in UI tests.
+- **E2E smoke:** upload → clip → poll job → download, scripted.
+
+Run `pytest` (backend) and `npm test`/`vitest` (frontend) after changes (per `AGENTS.md`).
+
+---
+
+## 11. Error Handling & Observability
+
+- FFmpeg errors are opaque. Capture **full stderr** per job to a log file; surface a friendly
+  message + a "view log" affordance.
+- Categorize failures: unsupported codec, disk full, invalid timestamps, cancelled, timeout,
+  OOM-killed.
+- Logging: Python `logging` with rotation; include the exact FFmpeg argv for reproducibility.
+- Don't leak stack traces or filesystem paths to clients.
+- Track disk usage and job durations over time to catch regressions.
+
+---
+
+## 12. Legal & Licensing
 
 - **FFmpeg license:** LGPL by default; **GPL** if built with `--enable-gpl` (needed for
-  libx264). GPL FFmpeg imposes obligations on your app if you ship it. Understand this
-  before commercial release.
-- **Patents:** H.264/H.265 have patent licensing bodies (MPEG LA / Access Advance). AV1 is
-  royalty-free.
-- **User content:** add terms clarifying users are responsible for rights to the media they
+  libx264). GPL FFmpeg imposes obligations on your distribution. Understand this before
+  release. (Debian's `ffmpeg` package is typically GPL — check what you install.)
+- **Patents:** H.264/H.265 have patent pools; AV1 is royalty-free.
+- **User content:** add terms clarifying users are responsible for rights to media they
   clip. Common for YouTube/Twitch clip tools.
-
----
-
-## 12. Cross-Platform Gotchas
-
-- Paths: use `pathlib`; never hardcode `/` or `\`.
-- Bundled binary names differ (`ffmpeg.exe` vs `ffmpeg`).
-- `subprocess` flags: use `CREATE_NO_WINDOW` on Windows to avoid console flashes.
-- Signal handling differs (Windows lacks POSIX signals).
-- Fonts/DPI/theming vary; high-DPI scaling needs `Qt.AA_EnableHighDpiScaling`.
-- File dialogs and default codecs differ per OS.
+- **Data/privacy:** uploaded media is user data — define retention (TTL) and deletion.
 
 ---
 
@@ -297,77 +404,86 @@ re-encodes only the affected clips (smart render), not the whole timeline.
 
 ```
 video_clipper/
-├── pyproject.toml
-├── README.md
+├── AGENTS.md
+├── .gitignore
 ├── docs/
-│   └── TECHNICAL_GUIDE.md
-├── src/video_clipper/
-│   ├── __init__.py
-│   ├── __main__.py            # entry point
-│   ├── app.py                 # QApplication bootstrap
-│   ├── config.py              # settings, paths, ffmpeg resolution
-│   ├── core/
-│   │   ├── project.py         # Project/Clip models + serialization
-│   │   ├── commands.py        # undo/redo command pattern
-│   │   └── queue.py           # job queue + states
-│   ├── media/
-│   │   ├── probe.py           # ffprobe wrapper + models
-│   │   ├── ffmpeg.py          # FFmpegRunner (QProcess)
-│   │   ├── command_builder.py # pure argv builders
-│   │   └── keyframes.py       # keyframe lookup / smart cut
-│   ├── ui/
-│   │   ├── main_window.py
-│   │   ├── timeline.py
-│   │   ├── preview.py
-│   │   └── dialogs.py
-│   └── bin/                   # bundled ffmpeg/ffprobe per platform
-└── tests/
-    ├── fixtures/
-    ├── test_command_builder.py
-    └── test_probe.py
+│   ├── TECHNICAL_GUIDE.md
+│   └── DEPLOYMENT.md
+├── backend/
+│   ├── pyproject.toml
+│   ├── app/
+│   │   ├── main.py            # FastAPI app, static mount
+│   │   ├── config.py          # dirs, limits, ffmpeg path, env
+│   │   ├── models.py          # pydantic schemas
+│   │   ├── api/
+│   │   │   └── routes.py      # upload, probe, clip, jobs, download
+│   │   ├── core/
+│   │   │   └── queue.py       # single-worker asyncio queue + progress
+│   │   ├── media/
+│   │   │   ├── probe.py       # ffprobe wrapper + models
+│   │   │   ├── ffmpeg.py      # FFmpegRunner (create_subprocess_exec)
+│   │   │   ├── command_builder.py  # pure argv builders
+│   │   │   └── keyframes.py   # keyframe lookup / snap
+│   │   └── maintenance/
+│   │       └── cleanup.py     # TTL sweeper + quota check
+│   └── tests/
+│       ├── fixtures/
+│       ├── test_command_builder.py
+│       └── test_probe.py
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── src/…
+└── deploy/
+    ├── video-clipper.service
+    ├── nginx.conf
+    └── cleanup.timer / .service
 ```
 
 ---
 
-## 14. Build Roadmap (incremental, always shippable)
+## 14. Build Roadmap (incremental, always deployable)
 
-1. **M1 — Skeleton:** window + "Open file" → `ffprobe` → show metadata.
-2. **M2 — Lossless trim:** in/out spinboxes → `-c copy` cut → progress bar → done.
-3. **M3 — Timeline + preview frames:** thumbnail strip, scrubbing, visual handles.
-4. **M4 — Job queue:** batch multiple clips, cancellation, per-job status.
-5. **M5 — Correctness pack:** keyframe-aware smart cut, concat/merge, format presets.
-6. **M6 — Polish:** undo/redo, autosave, settings, drag-and-drop, shortcuts.
-7. **M7 — Ship:** packaging, FFmpeg bundling, signing, auto-update, licensing review.
+1. **M1 — Backend skeleton:** FastAPI app, health check, static upload endpoint with size cap.
+2. **M2 — Probe:** upload → ffprobe → return metadata JSON.
+3. **M3 — Lossless clip:** `POST /api/clips` → single-worker queue → `-c copy` output +
+   download endpoint.
+4. **M4 — Progress:** `-progress` parsing → SSE stream → minimal React UI with progress bar.
+5. **M5 — Timeline + thumbnails:** server thumbnails, React timeline with in/out handles.
+6. **M6 — Robustness:** cancellation, TTL cleanup, disk quota, memory cgroup, precise-cut
+   re-encode option.
+7. **M7 — Deploy:** systemd + Nginx + HTTPS + monitoring on the VPS.
 
-Build a vertical slice (M1→M2) end-to-end **before** touching the timeline. A working ugly
-tool beats a beautiful non-working one.
-
----
-
-## 15. Mentor's Top 10 Things People Get Wrong
-
-1. Running FFmpeg on the GUI thread → frozen app.
-2. Assuming `-c copy` cuts are frame-accurate → keyframe snapping surprises.
-3. Not bundling FFmpeg → "works on my machine" only.
-4. Shelling out with string concatenation → breaks on spaces/special chars, injection risk.
-5. Ignoring VFR/phone recordings → A/V desync.
-6. No cancellation path → users can't stop a long encode.
-7. No autosave → lost work.
-8. Writing a video player from scratch → months of pain.
-9. Ignoring licensing → legal trouble at launch.
-10. Optimizing performance before there's a working product.
+Build a vertical slice (M1→M4) end-to-end **before** polishing the timeline. A working ugly
+tool beats a beautiful non-working one — especially on 1 vCPU.
 
 ---
 
-## 16. Learning Resources to Consult
+## 15. Mentor's Top 10 Things People Get Wrong (this stack)
+
+1. `shell=True` with user input → command injection.
+2. Reading entire uploads into memory → OOM on a 1 GB box.
+3. Running multiple FFmpeg jobs at once on 1 vCPU → everything crawls or dies.
+4. Assuming `-c copy` cuts are frame-accurate → keyframe-snapping surprises.
+5. `proxy_buffering on` → SSE progress never streams.
+6. Ignoring VFR/phone recordings → A/V desync.
+7. No TTL cleanup → disk fills, app breaks for everyone.
+8. Trusting client filename/MIME/extension → path traversal, bad files.
+9. No cancellation path → users can't stop a long encode; it hogs the core.
+10. No memory cgroup → one runaway re-encode takes down the server.
+
+---
+
+## 16. Learning Resources
 
 - FFmpeg docs: filters, `-ss`/`-t`, `-c copy`, concat demuxer, `-progress`.
-- `ffprobe` JSON output schema.
-- Qt for Python (PySide6) signals/slots, QProcess, QThread, QUndoStack.
-- "Keyframe / GOP / PTS-DTS" articles — any competent video-engineering primer.
-- PyInstaller docs for bundling binary data (`--add-binary`).
+- `ffprobe` JSON output schema (`-show_streams -show_format -show_frames`).
+- FastAPI docs: streaming uploads, `StreamingResponse`, background tasks, lifespan.
+- Server-Sent Events (SSE) spec and `EventSource` usage.
+- Vite + React + TypeScript guide.
+- systemd resource control (`MemoryMax`, `CPUQuota`) and Nginx proxy/SSE tuning.
+- Keyframe / GOP / PTS-DTS primers.
 
 ---
 
-*Written as a starting contract for yourself. Revisit and update it as decisions get made —
-the doc is a living artifact, not a one-time deliverable.*
+*Living document. Update it as decisions are made.*
