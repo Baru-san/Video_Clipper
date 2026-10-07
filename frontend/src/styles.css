@@ -706,6 +706,59 @@ button {
   white-space: nowrap;
 }
 
+/* ---- Transcript ---- */
+.source-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.source-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.source-opt.on {
+  border-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.source-note {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.source-select {
+  background: #171717;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 8px;
+  font-size: 0.85rem;
+}
+
+.transcript-view {
+  background: #141414;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  margin: 10px 0 0;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .media-card-body {
   padding: 8px 10px;
   flex: 1 1 auto;

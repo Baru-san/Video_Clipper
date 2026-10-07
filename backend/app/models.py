@@ -23,6 +23,7 @@ class Aspect(str, Enum):
 class JobKind(str, Enum):
     clip = "clip"
     analyze = "analyze"
+    transcribe = "transcribe"
 
 
 class JobStatus(str, Enum):
@@ -68,6 +69,21 @@ class AnalyzeRequest(BaseModel):
     max_length: float = Field(default=60, ge=5, le=1800)
     max_clips: int = Field(default=10, ge=1, le=30)
     language: str | None = Field(default=None, max_length=8)
+
+
+class TranscribeRequest(BaseModel):
+    upload_id: str = Field(min_length=1)
+    language: str | None = Field(default=None, max_length=8)
+    translate_to: str | None = Field(default=None, max_length=8)
+
+
+class UploadSummary(BaseModel):
+    upload_id: str
+    name: str = ""
+    duration: float
+    size: int
+    created: float
+    thumbnail_url: str | None = None
 
 
 class Candidate(BaseModel):

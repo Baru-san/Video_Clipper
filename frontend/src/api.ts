@@ -149,6 +149,35 @@ export async function createClipsBatch(payload: {
   return (await response.json()) as Job[];
 }
 
+export interface UploadSummary {
+  upload_id: string;
+  name: string;
+  duration: number;
+  size: number;
+  created: number;
+  thumbnail_url: string | null;
+}
+
+export async function listUploads(): Promise<UploadSummary[]> {
+  const response = await fetch("/api/uploads");
+  if (!response.ok) return asError(response);
+  return (await response.json()) as UploadSummary[];
+}
+
+export async function transcribe(payload: {
+  upload_id: string;
+  language?: string | null;
+  translate_to?: string | null;
+}): Promise<Job> {
+  const response = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) return asError(response);
+  return (await response.json()) as Job;
+}
+
 export interface Resource {
   id: string;
   upload_id: string;

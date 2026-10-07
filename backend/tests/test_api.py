@@ -175,6 +175,34 @@ def test_subtitles_skip_when_language_matches(monkeypatch, sample_video):
         assert "halo dunia" in client.get(job["subtitle_url"]).text
 
 
+def test_list_uploads_and_transcribe(monkeypatch, sample_video):
+    import app.media.stt as stt
+    from app.media.subtitles import Segment, Transcript
+
+    monkeypatch.setattr(stt, "is_configured", lambda: True)
+
+    async def fake_transcribe(path, language=None):
+        return Transcript("en", [Segment(0.0, 1.0, "hello world")])
+
+    monkeypatch.setattr(stt, "transcribe", fake_transcribe)
+
+    with TestClient(app) as client:
+        upload = _upload(client, sample_video).json()
+        listing = client.get("/api/uploads").json()
+        assert any(u["upload_id"] == upload["upload_id"] for u in listing)
+
+        created = client.post(
+            "/api/transcribe", json={"upload_id": upload["upload_id"]}
+        ).json()
+        job = _wait(client, created["id"])
+        assert job["status"] == "done"
+        assert job["subtitle_status"] == "done"
+        assert job["detected_language"] == "en"
+        srt = client.get(job["subtitle_url"])
+        assert srt.status_code == 200
+        assert "hello world" in srt.text
+
+
 def test_reencode_clip(sample_video):
     with TestClient(app) as client:
         upload = _upload(client, sample_video).json()

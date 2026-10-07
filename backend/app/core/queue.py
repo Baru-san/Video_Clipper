@@ -331,6 +331,51 @@ class JobQueue:
             index += 1
         return stt.merge_transcripts(parts)
 
+    async def _run_transcribe(self, job: Job) -> None:
+        audio_path = settings.tmp_dir / f"{job.id}_full.flac"
+        job.subtitle_status = "running"
+        try:
+            job.phase = "audio"
+            self._broadcast(job)
+            await self._runner.run(extract_audio_argv(job.source, str(audio_path)))
+
+            job.phase = "transcribe"
+            self._broadcast(job)
+            transcript = await self._transcribe_source(
+                job, str(audio_path), job.source_duration
+            )
+            job.detected_language = transcript.language or None
+            segments = transcript.segments
+
+            if job.translate_to and job.translate_to != transcript.language:
+                job.phase = "translate"
+                self._broadcast(job)
+                segments = await translate.translate_segments(
+                    segments, job.translate_to, transcript.language
+                )
+
+            job.phase = "write"
+            self._broadcast(job)
+            srt_path = settings.outputs_dir / f"{job.id}.srt"
+            srt_path.write_text(build_srt(segments), encoding="utf-8")
+            job.subtitle_path = str(srt_path)
+            job.subtitle_status = "done"
+            job.status = JobStatus.done
+            job.percent = 100.0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transcription failed for job %s: %s", job.id, exc)
+            job.status = JobStatus.failed
+            job.subtitle_status = "failed"
+            job.error = str(exc)[-2000:]
+        finally:
+            job.phase = None
+            job.finished_at = datetime.now(timezone.utc)
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._broadcast(job)
+
     async def _run_analyze(self, job: Job) -> None:
         audio_path = settings.tmp_dir / f"{job.id}_full.flac"
         try:
@@ -396,6 +441,10 @@ class JobQueue:
 
         if job.kind == JobKind.analyze:
             await self._run_analyze(job)
+            return
+
+        if job.kind == JobKind.transcribe:
+            await self._run_transcribe(job)
             return
 
         if job.mode == ClipMode.reencode or job.aspect == Aspect.vertical:

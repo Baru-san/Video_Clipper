@@ -10,9 +10,10 @@ import {
 } from "./api";
 import History from "./components/History";
 import AutoClip from "./components/AutoClip";
+import Transcript from "./components/Transcript";
 import Timeline from "./components/Timeline";
 
-type View = "clipper" | "auto" | "history";
+type View = "clipper" | "auto" | "transcript" | "history";
 
 function timecode(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -122,6 +123,12 @@ export default function App() {
             AI Trim
           </button>
           <button
+            className={view === "transcript" ? "tool active" : "tool"}
+            onClick={() => setView("transcript")}
+          >
+            Transcript
+          </button>
+          <button
             className={view === "history" ? "tool active" : "tool"}
             onClick={() => setView("history")}
           >
@@ -145,6 +152,10 @@ export default function App() {
               setView("clipper");
             }}
           />
+        </main>
+      ) : view === "transcript" ? (
+        <main className="workspace">
+          <Transcript upload={upload} onUpload={setUpload} />
         </main>
       ) : (
         <main className="workspace grid">

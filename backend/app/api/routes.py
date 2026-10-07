@@ -16,6 +16,7 @@ from app.core.queue import JobQueue, QueueFullError
 from app.core.uploads import (
     delete_upload,
     get_upload_name,
+    list_uploads,
     new_upload_path,
     resolve_upload,
     save_metadata,
@@ -36,7 +37,9 @@ from app.models import (
     JobOut,
     MediaInfoOut,
     SubtitlesMode,
+    TranscribeRequest,
     UploadOut,
+    UploadSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,6 +129,11 @@ async def _generate_thumbnails(source: str, upload_id: str, duration: float) -> 
         await runner.run(thumbnail_argv(source, pattern, fps))
     except Exception:  # noqa: BLE001 - thumbnails are best-effort
         logger.warning("thumbnail generation failed for %s", upload_id, exc_info=True)
+
+
+@router.get("/uploads", response_model=list[UploadSummary])
+async def list_uploads_route() -> list[UploadSummary]:
+    return [UploadSummary(**item) for item in list_uploads()]
 
 
 @router.get("/uploads/{upload_id}", response_model=MediaInfoOut)
@@ -336,6 +344,47 @@ async def create_analyze(request: Request, payload: AnalyzeRequest) -> JobOut:
             analyze_max_length=payload.max_length,
             analyze_max_clips=min(payload.max_clips, settings.analyze_max_clips),
             analyze_language=payload.language,
+        )
+    except QueueFullError as exc:
+        raise HTTPException(status_code=429, detail="server busy, try again later") from exc
+    return job.to_out()
+
+
+@router.post("/transcribe", response_model=JobOut)
+async def create_transcribe(request: Request, payload: TranscribeRequest) -> JobOut:
+    try:
+        source, info = resolve_upload(payload.upload_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="upload not found") from exc
+
+    if not info.has_audio:
+        raise HTTPException(status_code=422, detail="video has no audio track")
+    if info.duration > settings.analyze_max_source_seconds:
+        raise HTTPException(
+            status_code=422,
+            detail=f"video too long to transcribe (max {settings.analyze_max_source_seconds:.0f}s)",
+        )
+    if not stt.is_configured():
+        raise HTTPException(status_code=503, detail="transcription is not available")
+    if payload.translate_to:
+        if payload.translate_to not in settings.subtitle_targets:
+            raise HTTPException(status_code=422, detail="unsupported translation target")
+        if not translate.is_configured():
+            raise HTTPException(status_code=503, detail="translation is not available")
+
+    try:
+        job = _queue(request).submit(
+            upload_id=payload.upload_id,
+            source=str(source),
+            output="",
+            start=0.0,
+            duration=info.duration,
+            mode=ClipMode.copy,
+            source_name=get_upload_name(payload.upload_id),
+            kind=JobKind.transcribe,
+            source_duration=info.duration,
+            analyze_language=payload.language,
+            translate_to=payload.translate_to,
         )
     except QueueFullError as exc:
         raise HTTPException(status_code=429, detail="server busy, try again later") from exc

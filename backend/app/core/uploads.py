@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -85,6 +86,43 @@ def resolve_upload(upload_id: str) -> tuple[Path, MediaInfo]:
         size_bytes=int(media["size_bytes"]),
     )
     return path, info
+
+
+def list_uploads(max_age_hours: int = 24, limit: int = 50) -> list[dict]:
+    """List recent source uploads (for transcript / reuse), newest first."""
+    cutoff = time.time() - max_age_hours * 3600
+    items: list[dict] = []
+    for meta in settings.uploads_dir.glob("*.json"):
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        path = Path(data.get("path", ""))
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        upload_id = str(data.get("upload_id", ""))
+        media = data.get("media", {})
+        thumb = settings.thumbs_dir / upload_id / "thumb_001.jpg"
+        items.append(
+            {
+                "upload_id": upload_id,
+                "name": str(data.get("name", "") or ""),
+                "duration": float(media.get("duration", 0.0)),
+                "size": int(media.get("size_bytes", 0)),
+                "created": mtime,
+                "thumbnail_url": (
+                    f"/api/uploads/{upload_id}/thumbs/thumb_001.jpg"
+                    if thumb.is_file()
+                    else None
+                ),
+            }
+        )
+    items.sort(key=lambda item: item["created"], reverse=True)
+    return items[:limit]
 
 
 def delete_upload(upload_id: str) -> None:
