@@ -85,8 +85,16 @@ sed -e "s/listen 80;/listen ${WEB_PORT};/" \
     "${APP_DIR}/src/deploy/nginx.conf" > "${NGINX_CONF}"
 ln -sfn "${NGINX_CONF}" /etc/nginx/sites-enabled/video-clipper
 rm -f /etc/nginx/sites-enabled/default
+
+# Many VPS images ship Apache on port 80; hand the port to nginx.
+if systemctl list-unit-files 2>/dev/null | grep -q '^apache2\.service'; then
+  log "Disabling Apache (frees port 80)"
+  systemctl disable --now apache2 >/dev/null 2>&1 || true
+fi
+
 nginx -t
-systemctl reload nginx
+systemctl enable --now nginx >/dev/null 2>&1 || true
+systemctl restart nginx
 
 log "Waiting for the API to come up"
 for _ in $(seq 1 20); do

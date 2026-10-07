@@ -269,6 +269,8 @@ Rollback = check out the previous commit/tag and restart. Keep the last known-go
 
 | Symptom | Likely cause / fix |
 | --- | --- |
+| Nginx won't start: `bind() to 0.0.0.0:80 failed (98: Address already in use)` | Apache (or another server) owns port 80 — the installer disables `apache2`; verify with `ss -tlnp \| grep :80` |
+| Journal spam: `Failed to set 'cpu.cfs_quota_us' ... Invalid argument` | `CPUQuota` is unsupported in OpenVZ/Virtuozzo containers; the unit no longer sets it |
 | Service won't start, "ffmpeg not found" | `ffmpeg` not installed or PATH not visible to systemd — install it; log shows the resolved path |
 | `502 Bad Gateway` | API not running: `systemctl status video-clipper`, check `journalctl` |
 | Upload fails at `client_max_body_size` | Nginx cap lower than app cap — raise `client_max_body_size` |

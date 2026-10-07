@@ -16,9 +16,11 @@ Restart=on-failure
 RestartSec=3
 
 # Resource limits: protect a 1 vCPU / 1 GB box from runaway FFmpeg.
+# NOTE: CPUQuota is unsupported inside OpenVZ/Virtuozzo containers (cgroup
+# cpu.cfs_quota_us is read-only) and spams the journal, so we rely on Nice and
+# the memory cap instead.
 MemoryMax=700M
 MemoryHigh=600M
-CPUQuota=90%
 Nice=5
 
 # Hardening
