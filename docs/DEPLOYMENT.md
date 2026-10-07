@@ -48,6 +48,45 @@ If the VPS has no public IP (NAT VPS) and you only reach it through a web VNC co
   # browse to http://<provider-host>:8080/
   ```
 
+### Recommended for NAT: Cloudflare Tunnel
+
+On a NAT VPS the public IPv4 is **shared** — a DNS-only `A` record to that IP will not reach
+your VM, because its port 80/443 belong to the provider's front host. The robust fix is a
+**Cloudflare Tunnel**: `cloudflared` dials *outbound* to Cloudflare, so **no inbound port or
+port-forward is needed**.
+
+**Instant (no account, ephemeral URL):**
+
+```bash
+# install cloudflared, then:
+sudo cp deploy/cloudflared-quick.service /etc/systemd/system/
+sudo systemctl enable --now cloudflared-quick
+journalctl -u cloudflared-quick | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1
+```
+
+You get a temporary `https://<random>.trycloudflare.com` URL. The URL **changes on restart**
+— fine for testing, not for production.
+
+**Permanent (your own hostname):**
+
+1. Own a domain and add it to Cloudflare (change its nameservers to Cloudflare's). *A domain
+   you don't control, or one parked elsewhere, will not work.*
+2. Zero Trust → Networks → Tunnels → create a tunnel → copy the **token**.
+3. On the VM:
+   ```bash
+   sudo cloudflared service install <TOKEN>
+   sudo systemctl enable --now cloudflared
+   ```
+4. In the tunnel's **Public Hostname** settings, map your hostname to service
+   `http://localhost:80`.
+5. Done — `https://your-domain/` serves the app with Cloudflare TLS, no open ports.
+
+Verify from anywhere:
+
+```bash
+curl -s https://<hostname>/api/health     # {"status":"ok"}
+```
+
 ---
 
 ## 0. Prerequisites

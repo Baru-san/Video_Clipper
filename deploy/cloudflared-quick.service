@@ -1,0 +1,14 @@
+[Unit]
+# For NAT VPSes with no inbound ports. Provides an ephemeral public HTTPS URL
+# under trycloudflare.com. For a stable custom hostname use a NAMED tunnel
+# instead: cloudflared service install <TOKEN>  (see docs/DEPLOYMENT.md).
+Description=Cloudflare Quick Tunnel (video clipper)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:80 --no-autoupdate
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
