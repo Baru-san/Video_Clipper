@@ -18,11 +18,21 @@ def test_build_srt_formats_timestamps():
     assert "2\n00:00:02,000 --> 00:00:03,250\nBye" in srt
 
 
-def test_wrap_text_limits_lines():
+def test_wrap_text_keeps_all_words_within_width():
     text = " ".join(f"word{i}" for i in range(40))
-    wrapped = wrap_text(text)
-    assert len(wrapped.split("\n")) <= 2
-    assert all(len(line) <= 42 for line in wrapped.split("\n"))
+    lines = wrap_text(text)
+    assert all(len(line) <= 42 for line in lines)
+    assert " ".join(lines).split() == text.split()
+
+
+def test_build_srt_splits_long_segment_into_multiple_cues():
+    text = " ".join(f"word{i}" for i in range(30))
+    srt = build_srt([Segment(0.0, 10.0, text)])
+    blocks = [b for b in srt.strip().split("\n\n") if b]
+    assert len(blocks) > 1
+    assert "word0" in srt and "word29" in srt
+    assert blocks[0].startswith("1\n")
+    assert blocks[1].startswith("2\n")
 
 
 def test_parse_verbose_json_drops_empty_segments():

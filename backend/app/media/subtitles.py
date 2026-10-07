@@ -55,11 +55,11 @@ def _timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def wrap_text(text: str, max_chars: int = MAX_LINE_CHARS, max_lines: int = MAX_LINES) -> str:
-    """Greedy word-wrap to at most `max_lines` lines of ~max_chars."""
+def wrap_text(text: str, max_chars: int = MAX_LINE_CHARS) -> list[str]:
+    """Greedy word-wrap; returns every line (no words dropped)."""
     words = text.split()
     if not words:
-        return ""
+        return []
     lines: list[str] = []
     current = ""
     for word in words:
@@ -71,16 +71,30 @@ def wrap_text(text: str, max_chars: int = MAX_LINE_CHARS, max_lines: int = MAX_L
             current = candidate
     if current:
         lines.append(current)
-    return "\n".join(lines[:max_lines])
+    return lines
 
 
-def build_srt(segments: list[Segment]) -> str:
+def build_srt(
+    segments: list[Segment],
+    max_chars: int = MAX_LINE_CHARS,
+    max_lines: int = MAX_LINES,
+) -> str:
     blocks: list[str] = []
-    for index, segment in enumerate(segments, start=1):
-        text = wrap_text(segment.text)
-        if not text:
+    index = 0
+    for segment in segments:
+        lines = wrap_text(segment.text, max_chars)
+        if not lines:
             continue
-        blocks.append(
-            f"{index}\n{_timestamp(segment.start)} --> {_timestamp(segment.end)}\n{text}\n"
-        )
+        groups = [lines[i : i + max_lines] for i in range(0, len(lines), max_lines)]
+        count = len(groups)
+        span = max(segment.end - segment.start, 0.001)
+        for position, group in enumerate(groups):
+            index += 1
+            start = segment.start + span * (position / count)
+            end = segment.start + span * ((position + 1) / count)
+            blocks.append(
+                f"{index}\n{_timestamp(start)} --> {_timestamp(end)}\n"
+                + "\n".join(group)
+                + "\n"
+            )
     return "\n".join(blocks)
